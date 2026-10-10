@@ -61,8 +61,16 @@ export async function onboardingState(
   for (const j of jobs.sort((a, b) => a.createdAt.localeCompare(b.createdAt)))
     latest.set(j.data.sourceId || j.data.datasetId || j.id, j);
   const imports = [...latest.values()];
+  // Bulk auto-imports never gate setup; only explicitly added imports block
+  // Continue. Auto data still imports and stays available for selection.
+  const autoSourceIds = new Set(
+    allSources
+      .filter((s) => s.data.connectionId === "connection_local-auto")
+      .map((s) => s.id),
+  );
   const blockers: string[] = [];
-  for (const j of imports)
+  for (const j of imports) {
+    if (j.data.sourceId && autoSourceIds.has(j.data.sourceId)) continue;
     if (
       j.data.status !== "succeeded" &&
       !(
@@ -76,6 +84,7 @@ export async function onboardingState(
       blockers.push(
         `${j.name}: ${j.data.status === "failed" || j.data.status === "canceled" ? "retry or remove this import" : "import is still in progress"}.`,
       );
+  }
   for (const s of sources)
     if (
       !datasets.some((d) => d.data.sourceId === s.id) &&
@@ -83,6 +92,7 @@ export async function onboardingState(
     )
       blockers.push(`${s.name}: start the import or remove this source.`);
   for (const d of datasets) {
+    if (d.data.sourceId && autoSourceIds.has(d.data.sourceId)) continue;
     if (d.data.pendingVersion)
       blockers.push(`${d.name}: review the schema change before continuing.`);
     if (!d.data.activeVersion || !d.data.profile?.rows)
