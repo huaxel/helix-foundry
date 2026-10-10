@@ -15,6 +15,7 @@ vi.mock("../apps/api/src/setup-jobs.js", () => ({ prepareProvider: vi.fn() }));
 vi.mock("../apps/api/src/data-jobs.js", () => ({
   runSyncJob: vi.fn(),
   runUploadJob: vi.fn(),
+  syncLocalSources: vi.fn(async () => 0),
 }));
 vi.mock("../apps/api/src/pipeline-jobs.js", () => ({
   runPipelineJob: vi.fn(),

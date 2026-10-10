@@ -9,7 +9,7 @@ import {
 import { transaction, resource, type Store } from "./store.js";
 import { buildWorkspace, providerSettings, enqueue } from "./assistant.js";
 import { assert } from "./security.js";
-import { runSyncJob, runUploadJob } from "./data-jobs.js";
+import { runSyncJob, runUploadJob, syncLocalSources } from "./data-jobs.js";
 import { runPipelineJob } from "./pipeline-jobs.js";
 // Queue, leases and retries live here; each job type's work lives with its area.
 const jobHandlers: Record<
@@ -234,9 +234,20 @@ export function startWorker(store: Store) {
     timer = setTimeout(() => void poll(), idleDelay);
   };
   void poll();
+  // Auto-import declared Parquet mounts: new files become sources on startup
+  // and are picked up periodically, without any manual selection.
+  const syncLocal = () =>
+    syncLocalSources(store).catch((e) =>
+      console.error("Local auto-import:", e instanceof Error ? e.message : e),
+    );
+  void syncLocal();
+  const localTimer = setInterval(() => {
+    if (!stopped) void syncLocal();
+  }, 60_000);
   return async () => {
     stopped = true;
     if (timer) clearTimeout(timer);
+    clearInterval(localTimer);
     await stopStreams();
     await running;
   };

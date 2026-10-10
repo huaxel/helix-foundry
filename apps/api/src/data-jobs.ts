@@ -1,11 +1,11 @@
 // Data Connection job handlers (upload, sync), dispatched by the worker in jobs.ts.
 import type { Resource } from "../../../packages/shared/src/index.js";
 import { jobProgress } from "./setup-jobs.js";
-import { prepareSourceSync } from "./source-sync.js";
-import { transaction, now, type Store } from "./store.js";
-import { importSource } from "./connectors.js";
+import { prepareSourceSync, sourceSyncDefaults } from "./source-sync.js";
+import { transaction, now, resource, type Store } from "./store.js";
+import { discover, importSource } from "./connectors.js";
 import { ingestFile, removeStagedInput } from "./datasets.js";
-import { unseal } from "./security.js";
+import { seal, unseal } from "./security.js";
 
 export async function runUploadJob(store: Store, scope: string, job: Resource) {
   await jobProgress(store, scope, job.id, {
@@ -71,4 +71,63 @@ export async function runSyncJob(store: Store, scope: string, job: Resource) {
           : undefined,
       });
   });
+}
+// Auto-import declared Parquet mounts: any matching file without a source
+// becomes a source with a queued sync job. Idempotent, runs on worker
+// startup and periodically. Jobs carry no actor so the worker runs them as
+// system work; sources stay on manual sync (no automatic refresh).
+export async function syncLocalSources(store: Store): Promise<number> {
+  let files: string[];
+  try {
+    const found = (await discover("local", {})) as {
+      tables?: { name: string }[];
+    };
+    files = (found.tables || []).map((t) => String(t.name));
+  } catch {
+    // Mount missing, unreadable, or over the file cap.
+    return 0;
+  }
+  if (!files.length) return 0;
+  let created = 0;
+  for (const workspace of await store.list("global", "workspaceRef")) {
+    const scope = workspace.id;
+    const have = new Set(
+      (await store.list(scope, "source"))
+        .filter((s) => s.data.kind === "local")
+        .map((s) => s.name),
+    );
+    const missing = files.filter((name) => !have.has(name));
+    if (!missing.length) continue;
+    await transaction(store, scope, async (tx) => {
+      const current = new Set(
+        (await tx.list("source"))
+          .filter((s) => s.data.kind === "local")
+          .map((s) => s.name),
+      );
+      for (const filepath of missing) {
+        if (current.has(filepath)) continue;
+        const source = tx.put(
+          resource(scope, "source", filepath, {
+            kind: "local",
+            connectionId: "connection_local-auto",
+            connectionName: "Local Parquet",
+            secret: seal({ key: filepath }),
+            discovery: { tables: [{ name: filepath }] },
+            ...sourceSyncDefaults("local", null),
+          }),
+        );
+        tx.put(
+          resource(scope, "job", source.name, {
+            type: "sync",
+            sourceId: source.id,
+            status: "queued",
+            progress: { message: "Waiting to import" },
+          }),
+        );
+        current.add(filepath);
+        created++;
+      }
+    });
+  }
+  return created;
 }

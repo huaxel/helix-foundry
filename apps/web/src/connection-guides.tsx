@@ -144,16 +144,17 @@ GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'foundry'@'%';`}</pre>
       <p>
         Set the <code>LOCAL_DATA_PATH</code> environment variable in{" "}
         <code>.env</code> to the absolute path of your Parquet folder, then run{" "}
-        <code>docker compose --profile local up -d</code> to remount it. For
+        <code>docker compose up -d</code> to remount it. For
         example:
       </p>
       <pre>{`LOCAL_DATA_PATH=/path/to/parquet-exports
 LOCAL_DATA_INCLUDE=**/*.parquet`}</pre>
       <p>
         Set <code>LOCAL_DATA_INCLUDE</code> to a path glob, such as{" "}
-        <code>exports/2024/**/*.parquet</code>. The picker shows matching files;
-        choose <strong>Import all matching files</strong> to start them in
-        batches of 100. Nothing imports automatically on startup.
+        <code>exports/2024/**/*.parquet</code>. Matching files are imported
+        automatically on startup and new files are picked up about once a
+        minute, with no selection needed. The picker still shows matching
+        files if you want to import a subset manually.
       </p>
       <p>
         The folder is mounted read-only into the app container. Files are

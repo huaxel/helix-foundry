@@ -96,7 +96,7 @@ Stripe, WorkOS and PostHog appear beside the database hosts in **Add data**.
 ### REST APIs, files, S3 and the ingestion API
 
 - **REST** supports unpaginated, next-link, cursor and offset responses. Set the items path and the pagination fields to match the API.
-- **Local Parquet** reads selected files directly from the configured read-only mount; Foundry stores the file reference and profile instead of copying the Parquet into its data volume. The version guard checks file size and modification time. Keep mounted sources unchanged: if a file changes, queries against its old version fail and it must be re-imported; old file contents are not retained by Foundry.
+- **Local Parquet** reads selected files directly from the configured read-only mount; Foundry stores the file reference and profile instead of copying the Parquet into its data volume. Files matching `LOCAL_DATA_INCLUDE` are imported automatically on worker startup and new files are picked up about once a minute. The version guard checks file size and modification time. Keep mounted sources unchanged: if a file changes, queries against its old version fail and it must be re-imported; old file contents are not retained by Foundry.
 - **S3-compatible storage** imports selected files from a bucket.
 - **Uploads** accept CSV, JSON, JSONL and Parquet files up to 256 MB. Each upload becomes a durable background job, and you can choose several files together.
 - **The ingestion API** (`POST /api/v1/workspaces/:w/ingest`) accepts up to 10,000 rows per request. Ingestion replaces complete snapshots; it is not an append API.
