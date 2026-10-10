@@ -34,7 +34,10 @@ export async function prepareProvider(
     1000,
   );
   try {
-    if (settings.provider === "local") {
+    if (
+      settings.provider === "local" &&
+      settings.localApi !== "openai-compatible"
+    ) {
       let installed = false;
       if (settings.model === "qwen3:4b") {
         try {
@@ -151,7 +154,7 @@ export async function prepareProvider(
       });
     });
   } catch (e) {
-    // Ollama not running shows up as a bare network error.
+    // An unreachable endpoint surfaces as a bare network error.
     if (
       settings.provider === "local" &&
       e instanceof TypeError &&
@@ -159,7 +162,9 @@ export async function prepareProvider(
     )
       throw new AppError(
         502,
-        "Local AI is unavailable. Start Ollama and retry.",
+        settings.localApi === "openai-compatible"
+          ? "Local AI is unavailable. Check the endpoint URL and retry."
+          : "Local AI is unavailable. Start Ollama and retry.",
       );
     throw e;
   } finally {

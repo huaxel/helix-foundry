@@ -149,7 +149,11 @@ export function ConnectionDetail({ sourceId }: { sourceId: string }) {
               },
               {
                 label: "Schedule",
-                value: s.data.schedule ? `${s.data.schedule} UTC` : "Automatic",
+                value: s.data.schedule
+                  ? `${s.data.schedule} UTC`
+                  : s.data.sync?.mode === "manual"
+                    ? "Manual — re-import to refresh"
+                    : "Automatic",
                 mono: !!s.data.schedule,
               },
               {

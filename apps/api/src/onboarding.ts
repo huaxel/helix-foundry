@@ -167,10 +167,12 @@ export function registerOnboarding(
           discovery.tables?.some((t: any) => t.name === s.table),
           "Choose objects the API key can read",
         );
-      if (body.kind === "s3")
+      if (body.kind === "s3" || body.kind === "local")
         assert(
           discovery.tables?.some((t: any) => t.name === s.key),
-          "Choose files from the tested bucket",
+          body.kind === "local"
+            ? "Choose files from the tested folder"
+            : "Choose files from the tested bucket",
         );
     }
     return transaction(store, a.scope, async (tx) => {

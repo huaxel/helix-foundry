@@ -16,3 +16,4 @@ packages/*/dist
 backups/
 *.bak
 .claude/launch.json
+parquet-mount/

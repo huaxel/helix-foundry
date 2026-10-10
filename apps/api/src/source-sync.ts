@@ -46,6 +46,16 @@ const mysqlConfig = (c: Record<string, any>) => ({
 
 // Legacy schedules remain a fallback; they never override a working change stream.
 export function sourceSyncDefaults(kind: string, schedule?: string | null) {
+  if (kind === "local")
+    return {
+      schedule: null,
+      nextRun: null,
+      sync: {
+        mode: "manual",
+        status: "ready",
+        reason: "Local Parquet files are static. Re-import to refresh.",
+      },
+    };
   return {
     schedule: schedule || null,
     nextRun: database(kind) ? null : nextRun(schedule || fallback(kind)),
@@ -60,7 +70,11 @@ export function sourceSyncDefaults(kind: string, schedule?: string | null) {
 }
 
 export function scheduledRefresh(source: Resource) {
-  if (source.data.sync?.mode === "cdc" || source.data.sync?.mode === "auto")
+  if (
+    source.data.sync?.mode === "cdc" ||
+    source.data.sync?.mode === "auto" ||
+    source.data.sync?.mode === "manual"
+  )
     return false;
   return (
     !!(source.data.schedule || source.data.sync?.mode === "snapshot") &&

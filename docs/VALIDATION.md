@@ -44,7 +44,7 @@ On an Apple Silicon M1 Pro development machine with 16 GB RAM:
 | Median response including queue time  |    1,690 ms |
 | Slowest response including queue time |    3,139 ms |
 
-This benchmark excludes inference and measures the executor workload, not 25 browser sessions. The recorded 149 MB RSS is the benchmark client only and must not be represented as combined platform memory. Run `BENCH_HTTP=1 pnpm benchmark` with the executor available to reproduce it. Hardware, warm caches, storage, and query shape change results.
+This is a historical two-slot benchmark, before the small-machine Compose defaults were reduced to one executor slot. It excludes inference and measures the executor workload, not 25 browser sessions. The recorded 149 MB RSS is the benchmark client only and must not be represented as combined platform memory; peak executor/container memory remains uncertified. Run `BENCH_HTTP=1 pnpm benchmark` with the executor available to reproduce it; set `EXECUTOR_CONCURRENCY=2` to match the recorded slot count. Hardware, warm caches, storage, and query shape change results.
 
 ## Guided onboarding validation (24 September 2026)
 

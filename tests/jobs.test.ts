@@ -19,6 +19,7 @@ vi.mock("../apps/api/src/datasets.js", () => ({
     id: string,
     version: string,
   ) => resource(scope, "dataset", name, { activeVersion: version }, id),
+  removeStagedInput: vi.fn(),
   queryDatasets: vi.fn(),
 }));
 it("coalesces scheduled imports with queued work and completes a durable job", async () => {

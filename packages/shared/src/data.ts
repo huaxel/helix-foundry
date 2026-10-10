@@ -13,6 +13,7 @@ export const sourceKinds = [
   "stripe",
   "workos",
   "posthog",
+  "local",
 ] as const;
 export const SourceSchema = z.object({
   name: z.string().min(1).max(120),

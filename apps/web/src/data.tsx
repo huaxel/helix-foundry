@@ -162,6 +162,12 @@ function DatasetDetail({
           </section>
         )}
         <h3>Schema and profile</h3>
+        {d.data.profile.approximate && (
+          <p className="muted">
+            Some profile counts are estimates or omitted because exact profiling
+            exceeded the memory budget.
+          </p>
+        )}
         <DataTable
           rows={d.data.profile.columns.map((c: any) => ({
             column: c.name,

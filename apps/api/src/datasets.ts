@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { config } from "./config.js";
 import { execute } from "./executor.js";
 import { resource, transaction, now, type Store } from "./store.js";
-import type { Resource } from "../../../packages/shared/src/index.js";
+import type {
+  DatasetProfile,
+  Resource,
+} from "../../../packages/shared/src/index.js";
 import {
   datasetTable,
   datasetAliases,
@@ -16,6 +19,21 @@ export const pipelineId = (name: string) =>
   "pipeline_" + digest(name).slice(0, 16);
 // Sample datasets loaded at once; the executor handles a few ingests in parallel.
 export const SAMPLE_LOADS = 3;
+const compactProfile = (profile: DatasetProfile): DatasetProfile => ({
+  ...profile,
+  sample: Array.isArray(profile?.sample) ? profile.sample.slice(0, 3) : [],
+});
+export async function removeStagedInput(scope: string, file: string) {
+  if (!file) return;
+  try {
+    await rm(resolve(config.dataDir, "incoming", scope, file), { force: true });
+  } catch (error) {
+    console.warn(
+      "Unable to remove staged import:",
+      error instanceof Error ? error.message : "filesystem error",
+    );
+  }
+}
 export async function ingestFile(
   store: Store,
   scope: string,
@@ -26,6 +44,11 @@ export async function ingestFile(
   versionId?: string,
   schema?: { name: string; type: string }[],
   jobId?: string,
+  localSource?: {
+    path: string;
+    fingerprint: { size: number; mtimeMs: number };
+  },
+  approximateProfile = false,
 ) {
   const version =
     versionId === jobId && jobId
@@ -33,89 +56,128 @@ export async function ingestFile(
       : versionId || randomUUID();
   if (versionId && (await store.get(scope, version))) {
     const existing = datasetId ? await store.get(scope, datasetId) : undefined;
-    if (existing) return existing;
+    if (existing) {
+      if (!localSource && file) await removeStagedInput(scope, file);
+      return existing;
+    }
   }
-  const r = await execute({ mode: "ingest", scope, version, file, schema });
-  return transaction(store, scope, async (tx) => {
-    if (jobId)
-      assert(
-        (await tx.get(jobId))?.data.status !== "canceled",
-        "Import canceled",
-        409,
-      );
-    const old = datasetId ? await tx.get(datasetId) : undefined;
-    const ds =
-      old ||
-      resource(scope, "dataset", name, { sourceId, versions: [] }, datasetId);
-    const oldProfile = old?.data.profile;
-    const drift =
-      oldProfile &&
-      JSON.stringify(oldProfile.columns.map((x: any) => [x.name, x.type])) !==
-        JSON.stringify(r.profile.columns.map((x) => [x.name, x.type]));
-    const v = resource(
-      scope,
-      "version",
-      name,
-      { datasetId: ds.id, profile: r.profile, file: version + ".parquet" },
-      version,
-    );
-    tx.put(v);
-    const data = {
-      ...ds.data,
-      ...(jobId ? { importJobId: jobId } : {}),
-      profile: drift ? oldProfile : r.profile,
-      activeVersion: drift ? ds.data.activeVersion : version,
-      pendingVersion: drift ? version : null,
-      versions: [version, ...ds.data.versions],
-      sourceId: sourceId || ds.data.sourceId,
-      table: datasetTable(ds.id),
-      lastSync: now(),
-    };
-    const updated = tx.put({
-      ...ds,
-      revision: ds.revision + 1,
-      updatedAt: now(),
-      data,
-    });
-    const qualityIssues = oldProfile
-      ? r.profile.columns.flatMap((c) => {
-          const before = oldProfile.columns.find((x: any) => x.name === c.name);
-          return before
-            ? [
-                ...(before.primaryKey && !c.primaryKey
-                  ? [`${c.name} lost uniqueness or contains nulls`]
-                  : []),
-                ...(c.nulls / Math.max(1, r.profile.rows) >
-                before.nulls / Math.max(1, oldProfile.rows)
-                  ? [`${c.name} null rate increased`]
-                  : []),
-              ]
-            : [];
-        })
-      : [];
-    if (oldProfile && oldProfile.fingerprint !== r.profile.fingerprint)
-      tx.put(
-        resource(
-          scope,
-          "finding",
-          drift ? "Schema changed: " + name : "Data refreshed: " + name,
-          {
-            datasetId: ds.id,
-            version,
-            kind: drift ? "schema" : "refresh",
-            dismissed: false,
-            evidence: {
-              before: oldProfile.rows,
-              after: r.profile.rows,
-              qualityIssues,
-              duplicateRows: r.profile.duplicateRows,
-            },
-            fingerprint: r.profile.fingerprint,
-          },
-        ),
-      );
-    return updated;
+  const r = await execute({
+    mode: "ingest",
+    scope,
+    version,
+    file: localSource ? undefined : file,
+    sourcePath: localSource?.path,
+    sourceFingerprint: localSource?.fingerprint,
+    schema,
+    limit: 3,
+    approximateProfile,
   });
+  const storedProfile = compactProfile(r.profile);
+  let imported: Resource;
+  try {
+    imported = await transaction(store, scope, async (tx) => {
+      if (jobId)
+        assert(
+          (await tx.get(jobId))?.data.status !== "canceled",
+          "Import canceled",
+          409,
+        );
+      const old = datasetId ? await tx.get(datasetId) : undefined;
+      const ds =
+        old ||
+        resource(scope, "dataset", name, { sourceId, versions: [] }, datasetId);
+      const oldProfile = old?.data.profile;
+      const drift =
+        oldProfile &&
+        JSON.stringify(oldProfile.columns.map((x: any) => [x.name, x.type])) !==
+          JSON.stringify(r.profile.columns.map((x) => [x.name, x.type]));
+      const v = resource(
+        scope,
+        "version",
+        name,
+        {
+          datasetId: ds.id,
+          profile: storedProfile,
+          ...(localSource
+            ? {
+                sourcePath: localSource.path,
+                sourceFingerprint: localSource.fingerprint,
+              }
+            : { file: version + ".parquet" }),
+        },
+        version,
+      );
+      tx.put(v);
+      const data = {
+        ...ds.data,
+        ...(jobId ? { importJobId: jobId } : {}),
+        profile: drift ? compactProfile(oldProfile) : storedProfile,
+        activeVersion: drift ? ds.data.activeVersion : version,
+        pendingVersion: drift ? version : null,
+        versions: [version, ...ds.data.versions],
+        ...(localSource
+          ? {
+              sourcePath: localSource.path,
+              sourceFingerprint: localSource.fingerprint,
+            }
+          : { sourcePath: undefined, sourceFingerprint: undefined }),
+        sourceId: sourceId || ds.data.sourceId,
+        table: datasetTable(ds.id),
+        lastSync: now(),
+      };
+      const updated = tx.put({ ...ds, revision: ds.revision + 1, updatedAt: now(), data });
+      const qualityIssues = oldProfile
+        ? r.profile.columns.flatMap((c) => {
+            const before = oldProfile.columns.find(
+              (x: any) => x.name === c.name,
+            );
+            return before
+              ? [
+                  ...(before.primaryKey && !c.primaryKey
+                    ? [`${c.name} lost uniqueness or contains nulls`]
+                    : []),
+                  ...(c.nulls / Math.max(1, r.profile.rows) >
+                  before.nulls / Math.max(1, oldProfile.rows)
+                    ? [`${c.name} null rate increased`]
+                    : []),
+                ]
+              : [];
+          })
+        : [];
+      if (oldProfile && oldProfile.fingerprint !== r.profile.fingerprint)
+        tx.put(
+          resource(
+            scope,
+            "finding",
+            drift ? "Schema changed: " + name : "Data refreshed: " + name,
+            {
+              datasetId: ds.id,
+              version,
+              kind: drift ? "schema" : "refresh",
+              dismissed: false,
+              evidence: {
+                before: oldProfile.rows,
+                after: r.profile.rows,
+                qualityIssues,
+                duplicateRows: r.profile.duplicateRows,
+              },
+              fingerprint: r.profile.fingerprint,
+            },
+          ),
+        );
+      return updated;
+    });
+  } catch (error) {
+    // Execution may have written this unique version before metadata failed.
+    await rm(resolve(config.dataDir, "datasets", scope, `${version}.parquet`), {
+      force: true,
+    }).catch(() => {});
+    throw error;
+  }
+  // The durable Parquet snapshot is committed; the staged source copy is no
+  // longer needed. Failed imports retain it so queued uploads can be retried.
+  if (!localSource && file) await removeStagedInput(scope, file);
+  return imported;
 }
 export async function ingestRows(
   store: Store,
@@ -133,7 +195,12 @@ export async function ingestRows(
     resolve(dir, file),
     rows.map((r) => JSON.stringify(r)).join("\n"),
   );
-  return ingestFile(store, scope, name, file, sourceId, datasetId);
+  try {
+    return await ingestFile(store, scope, name, file, sourceId, datasetId);
+  } catch (error) {
+    await removeStagedInput(scope, file);
+    throw error;
+  }
 }
 export async function datasetInputs(
   store: Store,
@@ -151,9 +218,17 @@ export async function datasetInputs(
       "Dataset is unavailable",
       404,
     );
+    const version = await store.get(scope, ds.data.activeVersion as string);
+    assert(version?.kind === "version", "Dataset version is unavailable", 404);
     results.push({
       table: datasetTable(id),
       version: ds.data.activeVersion as string,
+      ...(version.data.sourcePath
+        ? {
+            sourcePath: version.data.sourcePath,
+            sourceFingerprint: version.data.sourceFingerprint,
+          }
+        : {}),
       aliases: datasetAliases(ds.name),
     });
   }

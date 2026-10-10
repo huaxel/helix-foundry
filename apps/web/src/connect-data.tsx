@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { paths } from "./paths";
 import { useQueryClient } from "@tanstack/react-query";
-import { FileUp, Globe2, Braces, Plus } from "lucide-react";
+import { FileUp, Globe2, Braces, Folder, Plus } from "lucide-react";
 import { api, number } from "./api";
 import { useWorkspace, Modal, DataTable } from "./ui";
 import {
@@ -26,6 +26,7 @@ const choices = [
   ["mysql", "MySQL", "Import tables from your database."],
   ["rest", "REST API", "Pull records from another service."],
   ["s3", "Blob storage", "S3 compatible storage"],
+  ["local", "Local Parquet", "Import Parquet files from a folder"],
   ["api", "Ingestion API", "Send records from your application."],
 ];
 // Business apps connected with an API key, shown beside the database hosts.
@@ -38,6 +39,7 @@ const sourceIcons: Record<string, typeof FileUp> = {
   upload: FileUp,
   rest: Globe2,
   api: Braces,
+  local: Folder,
 };
 
 export function ConnectData({

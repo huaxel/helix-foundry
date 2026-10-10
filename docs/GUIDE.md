@@ -27,7 +27,7 @@ This guide is the detailed companion to the [README](../README.md). It covers wh
 Helix Foundry is an AI-assisted data workspace that runs on your own computer, built on HelixDB and DuckDB. You connect data, confirm a suggested ontology or describe an outcome, inspect tested proposals, and publish a shared ontology with key metrics on Home. Local inference is the default; Claude and OpenAI are explicit alternatives.
 
 - **Sources:** PostgreSQL and MySQL discovery and streamed snapshot ingestion, sign-in for Neon, Supabase and PlanetScale, Stripe, WorkOS and PostHog, REST pagination, S3-compatible file imports, CSV, JSON, JSONL and Parquet uploads, and a batch ingestion API.
-- **Data:** immutable Parquet snapshots, profiles, key candidates, sensitivity hints, schema-drift review, version history and exports.
+- **Data:** immutable snapshots for imported data; mounted local Parquet files are read directly with size/mtime guards, alongside profiles, schema-drift review and version history.
 - **AI assistance:** generated catalog descriptions, executable pipeline SQL, ontology mappings and relationships, Home key metrics and action suggestions.
 - **Pipelines and questions:** pipelines defined as node graphs (DAGs) that compile to SQL, or as editable SQL, with before and after previews. Read-only AI questions return executed results with snapshot citations.
 - **Review:** evidence and query previews, bounded model repair, stale-proposal detection, atomic generation publication and definition rollback.
@@ -51,7 +51,7 @@ The sidebar has **Home**, **Ontology**, **Data** and **Analyst**, with **Setting
 
 While a workspace's setup is incomplete, opening the app goes straight to setup. There is no account to create. Setup has three steps.
 
-1. **AI.** Choose **Local** (the default, using `qwen3:4b`), **Claude** or **OpenAI**. Claude and OpenAI need an API key, and their default models are `claude-sonnet-4-6` and `gpt-5.4-mini`. **Continue** opens the Data step straight away, and the provider is prepared in the background. For Local, the app checks the release-pinned model, downloads it through Ollama if it is missing, verifies its digest and tests structured output. If preparation fails, the later steps show the error with **Retry AI connection** and **Change AI choice**. Setup still works without AI; AI only adds descriptions.
+1. **AI.** Choose **Local** (the configured OpenAI-compatible llama.cpp server), **Claude** or **OpenAI**. Claude and OpenAI need an API key, and their default models are `claude-sonnet-4-6` and `gpt-5.4-mini`. Local uses `MODEL_ENDPOINT` and the configured model from `.env`; the connection is tested before it is saved. If setup fails, the later steps show the error with **Retry AI connection** and **Change AI choice**. Setup still works without AI; AI only adds descriptions.
 2. **Data.** Connect your sources and let them import completely, or choose **Continue with sample data**. Nothing is seeded automatically.
 3. **Ontology.** Helix Foundry computes a suggested ontology from the data: entities consolidated across sources by matching keys, and the links between them. The suggestion is deterministic. When AI is ready, a background run rewrites only its summary, descriptions and link names. Rename or exclude entities, then click **Looks right — build my workspace**. The build runs as code without model calls, shows its progress in plain stages, and publishes the workspace. Home then opens with key metrics.
 
@@ -96,6 +96,7 @@ Stripe, WorkOS and PostHog appear beside the database hosts in **Add data**.
 ### REST APIs, files, S3 and the ingestion API
 
 - **REST** supports unpaginated, next-link, cursor and offset responses. Set the items path and the pagination fields to match the API.
+- **Local Parquet** reads selected files directly from the configured read-only mount; Foundry stores the file reference and profile instead of copying the Parquet into its data volume. The version guard checks file size and modification time. Keep mounted sources unchanged: if a file changes, queries against its old version fail and it must be re-imported; old file contents are not retained by Foundry.
 - **S3-compatible storage** imports selected files from a bucket.
 - **Uploads** accept CSV, JSON, JSONL and Parquet files up to 256 MB. Each upload becomes a durable background job, and you can choose several files together.
 - **The ingestion API** (`POST /api/v1/workspaces/:w/ingest`) accepts up to 10,000 rows per request. Ingestion replaces complete snapshots; it is not an append API.
@@ -110,7 +111,7 @@ If replication is unavailable, snapshots refresh every five minutes (or on an ex
 
 ## AI and review
 
-**Providers.** Local inference through Ollama is the default. Claude and OpenAI are explicit choices, and there is no fallback from one provider to another. Hosted keys are entered in the browser, encrypted, and tested before the provider is activated. If a replacement provider fails its test, the existing settings stay active.
+**Providers.** Local inference uses the configured llama.cpp OpenAI-compatible endpoint. Set `MODEL_ENDPOINT` in `.env` to a reachable `/v1` base URL and select the model ID served by that endpoint. The default for this fork is `http://framearch-juan:8000/v1` with `Qwen3.6-35B-A3B-MTP`; model weights remain on the remote server. The endpoint must be reachable from both app and worker containers. Claude and OpenAI are explicit choices, and there is no fallback from one provider to another. Hosted keys are entered in the browser, encrypted, and tested before the provider is activated. If a replacement provider fails its test, the existing settings stay active.
 
 **Context and privacy.** AI sees bounded schema, profile and sample context. Samples sent to a hosted provider mask detected sensitive columns unless `allowRawData` is set to `true` in the provider settings (an API-only setting, off by default). Detection is a heuristic, so review your source policies before using a hosted provider.
 
@@ -132,7 +133,6 @@ If replication is unavailable, snapshots refresh every five minutes (or on an ex
 | Worker   | Durable AI runs, scheduled imports, pipeline execution, proactive proposals   |
 | Executor | Disposable DuckDB child processes, declared inputs, isolated SELECT execution |
 | HelixDB  | Workspace metadata, API tokens, jobs, proposals, ontology records and edges   |
-| Ollama   | Local structured inference with persistent model storage                      |
 
 In Docker Compose, the worker runs as its own service. In development (`pnpm dev`), it runs inside the API process. Only the app publishes a port, on `127.0.0.1`. The executor sits alone on an internal network with no outside access.
 
@@ -142,18 +142,17 @@ Data lives in three Docker volumes:
 | ---------------------------- | ---------------------------------------------------------------------------------- |
 | `helix-foundry_helix-data`   | HelixDB metadata: workspaces, ontology, jobs, API tokens and encrypted credentials |
 | `helix-foundry_foundry-data` | Parquet snapshots, artifacts and staged uploads                                    |
-| `helix-foundry_model-data`   | Ollama model weights (not backed up; they can be downloaded again)                 |
 
 **HelixDB.** Queries use the HelixDB TypeScript SDK 3.2 and `/v2/query`. A scope revision is compared and advanced inside each write batch, so stale metadata writes fail as a unit. Dataset artifacts and staged ontology generations stay invisible until the publication pointer changes. Source imports remain separate from manual object overlays.
 
-**Executor isolation.** The executor loads approved input snapshots, disables external access and extension installation, locks its configuration, and wraps generated SQL as a single SELECT. It has no connector or API credentials. Two DuckDB jobs run at a time, each with a 512 MB memory setting and a 120-second timeout. In Compose the executor container is limited to 2 GB of memory and 128 processes, drops all Linux capabilities and cannot gain new privileges. Never expose its endpoint.
+**Executor isolation.** The executor loads approved input snapshots, disables external access and extension installation, locks its configuration, and wraps generated SQL as a single SELECT. It has no connector or API credentials. One DuckDB job runs at a time with a 768 MB memory setting, a 2 GB temporary-spill limit and a 900-second timeout. In Compose the executor container is limited to 2 GB of memory and 128 processes, drops all Linux capabilities and cannot gain new privileges. Never expose its endpoint.
 
 ## Security
 
 Helix Foundry is local-first: one person per computer, with no accounts and no sign-in. Because of that, the API only listens on this computer.
 
 - `HOST` must be a loopback address unless `ALLOW_NETWORK_ACCESS=true`. Compose sets that flag because it publishes the port on `127.0.0.1` only.
-- Do not expose the app to a network or put it behind a reverse proxy, tunnel or port forward. HelixDB, Ollama and the executor must remain private.
+- Do not expose the app to a network or put it behind a reverse proxy, tunnel or port forward. HelixDB and the executor must remain private.
 - Requests whose `Host` is not a loopback name or the configured origin's host are rejected with 403, which blocks DNS-rebinding attacks. Browser changes (anything other than GET, HEAD and OPTIONS) must come from the configured origin, or its loopback equivalent on the same port.
 - Requests are rate limited to 240 per minute per IP by default (`RATE_LIMIT_MAX`).
 - A request without an `Authorization` header acts as the local owner. Scripts and the SDK send `Authorization: Bearer TOKEN` with a token from **Settings → Developer tools**. Tokens are workspace-scoped, read-only by default and revocable. An invalid or revoked token is rejected with 401 rather than treated as the local owner.
@@ -161,7 +160,7 @@ Helix Foundry is local-first: one person per computer, with no accounts and no s
 
 ## Local development
 
-Use Node.js 24, pnpm 10.7 and Docker. Native Ollama is optional, and useful on Apple Silicon because Docker cannot use Metal.
+Use Node.js 24, pnpm 10.7 and Docker. Local inference requires a reachable OpenAI-compatible llama.cpp server configured through `MODEL_ENDPOINT`.
 
 ```sh
 pnpm install
@@ -170,15 +169,13 @@ pnpm install
 docker run -d --name helix-foundry-dev -p 127.0.0.1:6996:8080 \
   -e HELIX_DATA_DIR=/var/lib/helix -v helix-foundry-dev:/var/lib/helix \
   ghcr.io/helixdb/helixdb:v0.0.6@sha256:94b29942658ebdca0a91bf15edffe921a46da3e26e1223ea333ccce58c6212dd
-ollama serve &   # or run it in its own terminal; skip if Ollama is already running
-# Optional: the app also pulls the model when you choose Local.
-ollama pull qwen3:4b
+# Set MODEL_ENDPOINT in .env to the remote llama.cpp /v1 endpoint.
 pnpm dev
 ```
 
 Open **http://localhost:5173**. The Vite dev server proxies `/api` to the API on 3001, and the executor listens on 3002. Use 5173 rather than 3001 during development: the API may also serve an old build on 3001, and saves from it fail the origin check.
 
-- `./scripts/setup.sh` without flags writes `.env` with development URLs (`APP_ORIGIN=http://localhost:5173`, HelixDB on 6996, executor on 3002, Ollama on 11434) and two generated keys. It never overwrites an existing `.env`.
+- `./scripts/setup.sh` without flags writes `.env` with development URLs (`APP_ORIGIN=http://localhost:5173`, HelixDB on 6996, executor on 3002) and two generated keys. It never overwrites an existing `.env`. Set `MODEL_ENDPOINT` to a reachable llama.cpp `/v1` endpoint for local inference.
 - `pnpm doctor` checks HelixDB, the executor, the model endpoint and the local keys, using the development URLs in `.env`. It is for development only; for a Docker install, use the in-container check in the [agent runbook](../AGENTS.md#6-verify).
 - Startup applies the metadata schema idempotently; `pnpm migrate` applies it explicitly.
 - `pnpm build:sdk` builds JavaScript and TypeScript declarations for the SDK and shared contracts. Run `pnpm -C packages/shared pack` and `pnpm -C packages/sdk pack` to package the client. See the [API reference](API.md) for SDK usage.

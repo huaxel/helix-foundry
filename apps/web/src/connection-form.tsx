@@ -26,7 +26,10 @@ export function ConnectionForm({
     ),
     [selected, setSelected] = useState<string[]>([]),
     [preview, setPreview] = useState<any>(null),
-    [apiToken, setApiToken] = useState("");
+    [apiToken, setApiToken] = useState(""),
+    [filter, setFilter] = useState("");
+  // One connection imports at most this many selections.
+  const MAX_SELECTION = 100;
   const [manualPostgres, setManualPostgres] = useState(false);
   // Only REST asks for a name; it has no table or object to name its data.
   const stripeMode = /_(live|test)_/.exec(form.apiKey || "")?.[1];
@@ -35,6 +38,7 @@ export function ConnectionForm({
       postgres: form.database || "PostgreSQL",
       mysql: form.database || "MySQL",
       s3: form.bucket || "Blob storage",
+      local: form.prefix || "Local Parquet",
       stripe: stripeMode ? `Stripe (${stripeMode})` : "Stripe",
       workos: "WorkOS",
       posthog: "PostHog",
@@ -71,11 +75,29 @@ export function ConnectionForm({
     }
   };
   const finish = () => onImported?.();
+  const importLocalSelections = async (
+    selections: Record<string, string>[],
+  ) => {
+    const operationId = operation.current;
+    for (let i = 0; i < selections.length; i += MAX_SELECTION) {
+      await api(`/workspaces/${id}/onboarding/sources`, {
+        kind: "local",
+        name: connectionName,
+        config: connectionConfig,
+        selections: selections.slice(i, i + MAX_SELECTION),
+        schedule: form.schedule || null,
+        operationId: i === 0 ? operationId : `${operationId}_${i}`,
+      });
+    }
+  };
   const selection = (t: any) =>
-    kind === "s3"
+    kind === "s3" || kind === "local"
       ? { key: t.name }
       : { table: t.name, ...(t.schema ? { schema: t.schema } : {}) };
   const keyFor = (t: any) => JSON.stringify(selection(t));
+  const localMatches = (discovered?.tables || []).filter((t: any) =>
+    filter ? t.name.toLowerCase().includes(filter.toLowerCase()) : true,
+  );
   const related = new Set<string>();
   for (const k of discovered?.foreignKeys || discovered?.keys || []) {
     const from = keyFor({
@@ -212,6 +234,8 @@ Content-Type: application/json
                   },
                   "PUT",
                 );
+              } else if (kind === "local") {
+                await importLocalSelections(selections);
               } else {
                 await api(`/workspaces/${id}/onboarding/sources`, {
                   kind,
@@ -498,6 +522,26 @@ Content-Type: application/json
               </label>
             </>
           )}
+          {kind === "local" && (
+            <>
+              <label className="span2">
+                Connection name (optional)
+                <input
+                  value={form.name || ""}
+                  placeholder={suggestedName}
+                  onChange={(e) => update("name", e.target.value)}
+                />
+              </label>
+              <label className="span2">
+                Subdirectory (optional)
+                <input
+                  placeholder="exports/2024"
+                  value={form.prefix || ""}
+                  onChange={(e) => update("prefix", e.target.value)}
+                />
+              </label>
+            </>
+          )}
           {kind === "s3" &&
             [
               ["bucket", "Bucket"],
@@ -552,7 +596,7 @@ Content-Type: application/json
           {discovered && kind !== "rest" && (
             <fieldset className="span2 plain-fieldset">
               <legend>
-                {kind === "s3"
+                {kind === "s3" || kind === "local"
                   ? "Choose files to import"
                   : kind === "stripe"
                     ? `Choose Stripe objects to import (${discovered.mode} mode)`
@@ -560,63 +604,152 @@ Content-Type: application/json
                       ? `Choose ${kind === "workos" ? "WorkOS" : "PostHog"} objects to import`
                       : "Choose tables to import"}
               </legend>
+              <div className="selection-toolbar">
+                <label className="selection-filter">
+                  <input
+                    type="search"
+                    placeholder={`Filter ${discovered.tables.length} ${kind === "s3" || kind === "local" ? "files" : "tables"}…`}
+                    value={filter}
+                    onChange={(e) => setFilter(e.target.value)}
+                  />
+                </label>
+                <div className="selection-actions">
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={
+                      action.pending ||
+                      (kind !== "local" && selected.length >= MAX_SELECTION) ||
+                      (correctSource && selected.length === 1)
+                    }
+                    onClick={() => {
+                      operation.current = crypto.randomUUID();
+                      setSelected(
+                        correctSource
+                          ? [keyFor(discovered.tables[0])]
+                          : discovered.tables
+                              .filter((t: any) =>
+                                filter
+                                  ? t.name
+                                      .toLowerCase()
+                                      .includes(filter.toLowerCase())
+                                  : true,
+                              )
+                              .slice(
+                                0,
+                                kind === "local" ? undefined : MAX_SELECTION,
+                              )
+                              .map((t: any) => keyFor(t)),
+                      );
+                    }}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={action.pending || selected.length === 0}
+                    onClick={() => {
+                      operation.current = crypto.randomUUID();
+                      setSelected([]);
+                    }}
+                  >
+                    Clear
+                  </button>
+                  <span className="muted small">
+                    {selected.length} selected
+                  </span>
+                  {kind === "local" && !correctSource && (
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={action.pending || !localMatches.length}
+                      onClick={() => {
+                        operation.current = crypto.randomUUID();
+                        action.run(async () => {
+                          await importLocalSelections(
+                            localMatches.map((t: any) => selection(t)),
+                          );
+                          await finish();
+                        });
+                      }}
+                    >
+                      Import all {localMatches.length} matching files
+                    </button>
+                  )}
+                </div>
+              </div>
+              {kind !== "local" &&
+                selected.length >= MAX_SELECTION &&
+                discovered.tables.length > MAX_SELECTION && (
+                  <p className="muted small">
+                    {MAX_SELECTION} selected — the import limit for one
+                    connection. Add another connection for more.
+                  </p>
+                )}
               <div className="table-selection">
-                {discovered.tables.map((t: any) => {
-                  const key = keyFor(t);
-                  return (
-                    <div className="selection-row" key={key}>
-                      <label className="checkbox">
-                        <input
-                          type="checkbox"
-                          checked={selected.includes(key)}
-                          onChange={(e) => {
-                            operation.current = crypto.randomUUID();
-                            setSelected((s) =>
-                              e.target.checked
-                                ? correctSource
-                                  ? [key]
-                                  : [...s, key]
-                                : s.filter((k) => k !== key),
-                            );
-                          }}
-                        />
-                        <span>
-                          {t.schema ? t.schema + "." : ""}
-                          {t.name}
-                          {related.has(key) && !selected.includes(key) && (
-                            <small>Related to your selection</small>
-                          )}
-                        </span>
-                      </label>
-                      {kind !== "s3" && (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() =>
-                            action.run(async () =>
-                              setPreview(
-                                await api(`/workspaces/${id}/sources/test`, {
-                                  kind,
-                                  name: connectionName,
-                                  config: {
-                                    ...connectionConfig,
-                                    ...selection(t),
-                                  },
-                                }),
-                              ),
-                            )
-                          }
-                        >
-                          Preview
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
+                {discovered.tables
+                  .filter((t: any) =>
+                    filter
+                      ? t.name.toLowerCase().includes(filter.toLowerCase())
+                      : true,
+                  )
+                  .map((t: any) => {
+                    const key = keyFor(t);
+                    return (
+                      <div className="selection-row" key={key}>
+                        <label className="checkbox">
+                          <input
+                            type="checkbox"
+                            checked={selected.includes(key)}
+                            onChange={(e) => {
+                              operation.current = crypto.randomUUID();
+                              setSelected((s) =>
+                                e.target.checked
+                                  ? correctSource
+                                    ? [key]
+                                    : [...s, key]
+                                  : s.filter((k) => k !== key),
+                              );
+                            }}
+                          />
+                          <span>
+                            {t.schema ? t.schema + "." : ""}
+                            {t.name}
+                            {related.has(key) && !selected.includes(key) && (
+                              <small>Related to your selection</small>
+                            )}
+                          </span>
+                        </label>
+                        {kind !== "s3" && (
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={() =>
+                              action.run(async () =>
+                                setPreview(
+                                  await api(`/workspaces/${id}/sources/test`, {
+                                    kind,
+                                    name: connectionName,
+                                    config: {
+                                      ...connectionConfig,
+                                      ...selection(t),
+                                    },
+                                  }),
+                                ),
+                              )
+                            }
+                          >
+                            Preview
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
               </div>
               <p className="muted small">
                 Only selected{" "}
-                {kind === "s3"
+                {kind === "s3" || kind === "local"
                   ? "files"
                   : kind === "stripe"
                     ? "objects"

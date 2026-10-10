@@ -6,18 +6,63 @@ import {
   GetObjectCommand,
 } from "@aws-sdk/client-s3";
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { pipeline } from "node:stream/promises";
+import { mkdir, readdir, stat, rm } from "node:fs/promises";
 import { once } from "node:events";
-import { resolve } from "node:path";
+import { resolve, relative, sep, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
+import { realpath } from "node:fs/promises";
 import { assert } from "./security.js";
 import { postgresPoolConfig } from "./postgres-config.js";
 import { discoverStripe, importStripe } from "./stripe.js";
 import { discoverWorkos, importWorkos } from "./workos.js";
 import { discoverPosthog, importPosthog } from "./posthog.js";
 export type ConnectorConfig = Record<string, any>;
+export async function resolveLocalParquet(
+  sourcePath: string,
+  expected?: { size: number; mtimeMs: number },
+) {
+  assert(!isAbsolute(sourcePath), "Invalid mounted source path", 400);
+  const root = await realpath(config.localDataPath);
+  const abs = await realpath(resolve(root, sourcePath));
+  assert(
+    abs.startsWith(root + sep) && abs.toLowerCase().endsWith(".parquet"),
+    "File must be a Parquet file within the local data path",
+    400,
+  );
+  const info = await stat(abs);
+  assert(info.isFile(), "Local source must be a Parquet file", 400);
+  if (expected)
+    assert(
+      info.size === expected.size && info.mtimeMs === expected.mtimeMs,
+      "Mounted Parquet source changed; re-import it to refresh the dataset",
+      409,
+    );
+  return {
+    path: relative(root, abs),
+    absolutePath: abs,
+    fingerprint: { size: info.size, mtimeMs: info.mtimeMs },
+  };
+}
+export function matchesLocalDataInclude(value: string, pattern: string) {
+  let expression = "";
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern.startsWith("**/", i)) {
+      expression += "(?:.*/)?";
+      i += 2;
+    } else if (pattern.startsWith("**", i)) {
+      expression += ".*";
+      i++;
+    } else if (pattern[i] === "*") {
+      expression += "[^/]*";
+    } else if (pattern[i] === "?") {
+      expression += "[^/]";
+    } else {
+      expression += pattern[i].replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${expression}$`, "i").test(value);
+}
 function mysqlPool(c: ConnectorConfig) {
   return mysql.createPool({
     host: c.host,
@@ -185,6 +230,40 @@ export async function discover(kind: string, c: ConnectorConfig) {
   if (kind === "stripe") return discoverStripe(c);
   if (kind === "workos") return discoverWorkos(c);
   if (kind === "posthog") return discoverPosthog(c);
+  if (kind === "local") {
+    const root = await realpath(config.localDataPath);
+    const dir = c.prefix ? resolve(root, c.prefix) : root;
+    const abs = await realpath(dir);
+    assert(
+      abs === root ||
+        (abs.startsWith(root + sep) && relative(root, abs).length > 0),
+      "Prefix must be within the local data path",
+      400,
+    );
+    const tables: { name: string; size?: number }[] = [];
+    let found = 0;
+    const walk = async (dir: string) => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        if (found > 10000)
+          throw new Error(
+            "More than 10,000 files found. Use a narrower prefix.",
+          );
+        if (entry.isDirectory()) {
+          await walk(resolve(dir, entry.name));
+          continue;
+        }
+        if (!/\.parquet$/i.test(entry.name)) continue;
+        const full = resolve(dir, entry.name);
+        const key = relative(root, full);
+        if (!matchesLocalDataInclude(key, config.localDataInclude)) continue;
+        const s = await stat(full);
+        tables.push({ name: key, size: s.size });
+        found++;
+      }
+    };
+    await walk(abs);
+    return { tables };
+  }
   if (kind === "rest") {
     const r = await fetch(checkedURL(c.url), {
       headers: headers(c),
@@ -218,7 +297,27 @@ export async function importSource(
   file: string;
   records: number;
   schema?: { name: string; type: string }[];
+  sourcePath?: string;
+  sourceFingerprint?: { size: number; mtimeMs: number };
 }> {
+  if (kind === "local") {
+    assert(c.key, "Select a Parquet file");
+    assert(
+      /\.parquet$/i.test(c.key),
+      "Local connector only supports Parquet files",
+    );
+    const source = await resolveLocalParquet(c.key);
+    await progress?.({
+      message: "Using mounted Parquet source",
+      bytes: source.fingerprint.size,
+    });
+    return {
+      file: "",
+      records: 0,
+      sourcePath: source.path,
+      sourceFingerprint: source.fingerprint,
+    };
+  }
   await mkdir(resolve(config.dataDir, "incoming", scope), { recursive: true });
   const ext =
     kind === "s3"
@@ -435,6 +534,7 @@ export async function importSource(
     return { file, records: count, schema: count === 0 ? schema : undefined };
   } catch (e) {
     out.destroy();
+    await rm(path, { force: true }).catch(() => {});
     throw e;
   }
 }

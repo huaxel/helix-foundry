@@ -1,11 +1,32 @@
 import { it, expect } from "vitest";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, mkdir, writeFile, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
-import { discover, importSource } from "../apps/api/src/connectors.js";
+import { resolve, dirname, sep } from "node:path";
+import {
+  discover,
+  importSource,
+  matchesLocalDataInclude,
+} from "../apps/api/src/connectors.js";
 import { config } from "../apps/api/src/config.js";
+import { mkdtempSync } from "node:fs";
+import os from "node:os";
+it("matches configured local Parquet include globs", () => {
+  expect(
+    matchesLocalDataInclude("EHT/2025/object.parquet", "**/*.parquet"),
+  ).toBe(true);
+  expect(matchesLocalDataInclude("object.parquet", "**/*.parquet")).toBe(true);
+  expect(
+    matchesLocalDataInclude("EHT/object.parquet", "EHT/**/*.parquet"),
+  ).toBe(true);
+  expect(
+    matchesLocalDataInclude("PRI/object.parquet", "EHT/**/*.parquet"),
+  ).toBe(false);
+  expect(matchesLocalDataInclude("EHT/object.csv", "EHT/**/*.parquet")).toBe(
+    false,
+  );
+});
 it("discovers and imports paginated REST data without forwarding credentials across origins", async () => {
   const seen: string[] = [];
   const server = createServer((req, res) => {
@@ -105,5 +126,65 @@ it("speaks S3-compatible list and streamed object protocols", async () => {
       recursive: true,
       force: true,
     });
+  }
+});
+// Placeholder bytes for a `.parquet` file. Discovery and import for the local
+// connector only stat the path and check the extension; they never parse the
+// file here. Content validation happens later in the DuckDB executor, which the
+// engine tests exercise with a real Parquet file.
+const parquetFixture = Buffer.from("not-a-real-parquet", "utf8");
+it("discovers local Parquet files recursively and rejects path traversal", async () => {
+  const scope = "local-" + randomUUID();
+  const dir = mkdtempSync(resolve(os.tmpdir(), "foundry-local-"));
+  const previous = config.localDataPath;
+  config.localDataPath = dir;
+  try {
+    // Write fixture parquet files
+    await writeFile(resolve(dir, "people.parquet"), parquetFixture);
+    await mkdir(resolve(dir, "sub"), { recursive: true });
+    await writeFile(resolve(dir, "sub", "nested.parquet"), parquetFixture);
+
+    // Escape file outside the root for traversal testing
+    const escape = resolve(dirname(dir), "escape.parquet");
+    await writeFile(escape, "x");
+
+    const found = await discover("local", {});
+    expect(found.tables).toHaveLength(2);
+    expect(found.tables).toEqual(
+      expect.arrayContaining([
+        { name: "people.parquet", size: expect.any(Number) },
+        { name: "sub" + sep + "nested.parquet", size: expect.any(Number) },
+      ]),
+    );
+
+    const imported = await importSource(scope, "local", {
+      key: "people.parquet",
+    });
+    expect(imported.file).toBe("");
+    expect(imported.sourcePath).toBe("people.parquet");
+    expect(imported.sourceFingerprint).toMatchObject({
+      size: parquetFixture.length,
+      mtimeMs: expect.any(Number),
+    });
+    await expect(
+      stat(resolve(config.dataDir, "incoming", scope)),
+    ).rejects.toThrow();
+
+    // Traversal is rejected
+    await expect(discover("local", { prefix: ".." + sep })).rejects.toThrow(
+      "within the local data path",
+    );
+
+    await expect(
+      importSource(scope, "local", { key: ".." + sep + "escape.parquet" }),
+    ).rejects.toThrow("within the local data path");
+  } finally {
+    config.localDataPath = previous;
+    await rm(dir, { recursive: true, force: true });
+    await rm(resolve(config.dataDir, "incoming", scope), {
+      recursive: true,
+      force: true,
+    });
+    await rm(dirname(dir) + sep + "escape.parquet", { force: true });
   }
 });

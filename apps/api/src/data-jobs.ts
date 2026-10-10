@@ -4,7 +4,7 @@ import { jobProgress } from "./setup-jobs.js";
 import { prepareSourceSync } from "./source-sync.js";
 import { transaction, now, type Store } from "./store.js";
 import { importSource } from "./connectors.js";
-import { ingestFile } from "./datasets.js";
+import { ingestFile, removeStagedInput } from "./datasets.js";
 import { unseal } from "./security.js";
 
 export async function runUploadJob(store: Store, scope: string, job: Resource) {
@@ -35,17 +35,29 @@ export async function runSyncJob(store: Store, scope: string, job: Resource) {
     unseal(source.data.secret),
     (p) => jobProgress(store, scope, job.id, p),
   );
-  const ds = await ingestFile(
-    store,
-    scope,
-    source.name,
-    imported.file,
-    source.id,
-    source.data.datasetId || "source_" + source.id,
-    job.id,
-    imported.schema,
-    job.id,
-  );
+  const ds = await (async () => {
+    try {
+      return await ingestFile(
+        store,
+        scope,
+        source.name,
+        imported.file || "",
+        source.id,
+        source.data.datasetId || "source_" + source.id,
+        job.id,
+        imported.schema,
+        job.id,
+        imported.sourcePath && imported.sourceFingerprint
+          ? {
+              path: imported.sourcePath,
+              fingerprint: imported.sourceFingerprint,
+            }
+          : undefined,
+      );
+    } finally {
+      if (imported.file) await removeStagedInput(scope, imported.file);
+    }
+  })();
   await transaction(store, scope, async (tx) => {
     const s = await tx.get(source.id);
     if (s && s.data.secret === source.data.secret)

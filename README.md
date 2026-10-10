@@ -37,7 +37,7 @@ Your agent will ask you to approve `git`, `docker` and network commands as it go
 
 - Check that Docker is running and that the app's port (3001 by default) is free, and pick another port if it is not.
 - Generate local encryption keys in `.env` with `scripts/setup.sh`.
-- Build and start the stack with Docker Compose, including a local AI model. On a Mac where Ollama is already running, it uses that instead.
+- Build and start the stack with Docker Compose, using the configured remote llama.cpp server for local inference.
 - Wait for the health check to pass, then give you the URL.
 
 **What you do next**
@@ -58,7 +58,7 @@ cd helix-foundry
 ./scripts/setup.sh --compose
 ```
 
-`setup.sh` writes fresh keys to `.env` if it does not exist yet, then builds and starts the app, a background worker, the DuckDB executor, HelixDB and Ollama. The first run builds the image and downloads HelixDB, Ollama and the `qwen3:4b` model (roughly 2.5 GB), so give it several minutes.
+`setup.sh` writes fresh keys to `.env` if it does not exist yet, then builds and starts the app, a background worker, the DuckDB executor and HelixDB. Local inference uses the configured OpenAI-compatible llama.cpp endpoint; Foundry does not download or store model weights.
 
 It is ready when the health check answers:
 
@@ -67,7 +67,7 @@ curl -fsS http://localhost:3001/api/health
 # {"ok":true,"service":"helix-foundry"}
 ```
 
-Then open **http://localhost:3001**. The model keeps downloading in the background, and you can start setup before it finishes.
+Then open **http://localhost:3001**. The configured remote model endpoint is tested during setup; its weights remain on that server.
 
 **Port 3001 already in use?** Create `.env` first, then set the port and the matching origin together:
 
@@ -80,22 +80,22 @@ echo 'PUBLIC_ORIGIN=http://localhost:3005' >> .env
 
 Add the two lines once; if `.env` already has them, change their values instead. Always change both. If only the port changes, pages load but every save fails with `403 Origin is not allowed`.
 
-**Apple Silicon.** Docker cannot use Metal, so local AI is faster with native [Ollama](https://ollama.com). Start Ollama, then run the stack without the bundled model:
+**Remote local inference.** Point `MODEL_ENDPOINT` in `.env` at the llama.cpp OpenAI-compatible `/v1` endpoint, then start the stack normally:
 
 ```sh
 ./scripts/setup.sh
-grep -q '^MODEL_ENDPOINT=' .env || echo 'MODEL_ENDPOINT=http://host.docker.internal:11434' >> .env
+grep -q '^MODEL_ENDPOINT=' .env || echo 'MODEL_ENDPOINT=http://framearch-juan:8000/v1' >> .env
 docker compose up -d --build
 ```
 
-This relies on Docker Desktop, which provides `host.docker.internal`. With another Docker runtime, use the default command above.
+For another llama.cpp server, set `MODEL_ENDPOINT` to its reachable OpenAI-compatible `/v1` URL.
 
 ## Requirements
 
 - **Docker** with the Compose v2 plugin (`docker compose`, not `docker-compose`). Checked with Compose 2.29.
 - **git, bash and openssl** for the setup scripts.
-- **Disk:** several GB for the first run: the app image (about 0.9 GB), HelixDB, Ollama and the `qwen3:4b` model.
-- **Memory:** local AI was developed and benchmarked on a 16 GB machine. Give Docker enough memory for the model, or choose Claude or OpenAI during setup.
+- **Disk:** the app image and HelixDB; model weights remain on the remote llama.cpp server.
+- **Memory:** Docker needs headroom for HelixDB and DuckDB imports; local model inference runs on the configured remote llama.cpp server.
 - **Node.js 24 and pnpm 10.7**, only for [local development](#local-development).
 
 Helix Foundry is developed and validated on macOS with Apple Silicon, and CI runs on Linux. Windows is untested, and the scripts need bash.
@@ -105,22 +105,22 @@ Helix Foundry is developed and validated on macOS with Apple Silicon, and CI run
 - **Connectors** for Neon, Supabase, PlanetScale, PostgreSQL, MySQL, Stripe, WorkOS, PostHog, REST APIs, S3-compatible storage, file uploads (CSV, JSON, JSONL, Parquet) and an ingestion API.
 - **Automatic sync** through native PostgreSQL and MySQL change capture where the database allows it, and scheduled snapshot refreshes otherwise.
 - **A suggested ontology** that matches the same customers and records across sources, stored as real objects and relationships in HelixDB.
-- **Versioned data:** immutable Parquet snapshots with profiles, schema-drift review and history, queried by isolated DuckDB processes.
+- **Versioned data:** imported datasets are immutable Parquet snapshots; mounted local Parquet sources are read directly with file metadata guards, avoiding a second stored copy.
 - **Home and Analyst:** key metrics, and answers to your questions backed by executed SQL with snapshot citations.
-- **Your choice of AI:** local `qwen3:4b` through Ollama by default, or Claude or OpenAI. AI-proposed changes are tested and wait for your review.
+- **Your choice of AI:** the configured llama.cpp OpenAI-compatible endpoint by default, Claude or OpenAI. AI-proposed changes are tested and wait for your review.
 - **Developer access:** OpenAPI at `/api/docs`, a TypeScript SDK, scoped API tokens, and backup and restore scripts.
 
 The full feature list, connector details and architecture are in the [guide](docs/GUIDE.md).
 
 ## Everyday commands
 
-Run these from the repository. If you use native Ollama, leave out `--profile local`.
+Run these from the repository. Set `MODEL_ENDPOINT` to the remote llama.cpp `/v1` URL in `.env`; the local inference setup uses this endpoint.
 
 ```sh
-docker compose --profile local ps -a                # status
-docker compose --profile local logs -f app worker   # follow logs (Ctrl+C to stop)
-docker compose --profile local stop                 # stop
-docker compose --profile local up -d                # start again
+docker compose ps                                  # status
+docker compose logs -f app worker                  # follow logs (Ctrl+C to stop)
+docker compose stop                                # stop
+docker compose up -d                               # start again
 ```
 
 The stack starts again with Docker unless you stopped it.
@@ -130,7 +130,7 @@ The stack starts again with Docker unless you stopped it.
 ```sh
 ./scripts/backup.sh ~/helix-foundry-backups/$(date +%Y%m%d-%H%M%S)
 git pull
-docker compose --profile local up -d --build
+docker compose up -d --build
 ```
 
 **Back up and restore.** `./scripts/backup.sh PATH` briefly stops the services, archives the HelixDB and data volumes, and copies `.env` as `config.env`. Keep backups private and outside the repository, because `config.env` holds your encryption key. `./scripts/restore.sh PATH --replace` replaces the current data and `.env` with a backup.
@@ -150,13 +150,13 @@ docker run -d --name helix-foundry-dev -p 127.0.0.1:6996:8080 \
 pnpm dev
 ```
 
-Open **http://localhost:5173**. `pnpm dev` runs the API on 3001, the executor on 3002 and the web app on 5173. Local AI also needs Ollama on port 11434 (`ollama serve`). Before opening a pull request, run the same checks as CI: `pnpm typecheck`, `pnpm test` and `pnpm build`. The [guide](docs/GUIDE.md#local-development) covers tests, ports and the SDK.
+Open **http://localhost:5173**. `pnpm dev` runs the API on 3001, the executor on 3002 and the web app on 5173. Set `MODEL_ENDPOINT` to a reachable llama.cpp `/v1` endpoint for local inference. Before opening a pull request, run the same checks as CI: `pnpm typecheck`, `pnpm test` and `pnpm build`. The [guide](docs/GUIDE.md#local-development) covers tests, ports and the SDK.
 
 ## Security model
 
 Helix Foundry is built for one person on their own computer. There are no accounts and no sign-in, so anyone who can reach the app controls every workspace.
 
-- The app is published on `127.0.0.1` only. Never expose it with a reverse proxy, tunnel or port forward, and never publish the internal HelixDB, executor or Ollama ports.
+- The app is published on `127.0.0.1` only. Never expose it with a reverse proxy, tunnel or port forward, and never publish the internal HelixDB or executor ports.
 - The API rejects requests whose `Host` is not this computer, and browser changes from any other origin, with `403`.
 - Connector and AI credentials are encrypted with `ENCRYPTION_KEY` from `.env`. Keep `.env` and backups private and out of git. If you lose the key, stored credentials cannot be recovered. Do not try to rotate it by replacing the value.
 - Generated SQL runs in a separate DuckDB executor on an internal network with no internet access, no connector credentials, no Linux capabilities, and memory and process limits.
@@ -170,7 +170,7 @@ Helix Foundry is built for one person on their own computer. There are no accoun
 | [docs/GUIDE.md](docs/GUIDE.md)           | Features, connectors, AI and review, architecture, development and testing        |
 | [docs/DESIGN.md](docs/DESIGN.md)         | Existing visual standards, UI tokens, progress feedback and accessibility         |
 | [docs/onboarding.md](docs/onboarding.md) | Onboarding API routes, SDK methods and import limits                              |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Install profiles, diagnostics, change capture, backup, restore, upgrades, limits  |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Installation, diagnostics, change capture, backup, restore, upgrades, limits  |
 | [docs/HOSTING.md](docs/HOSTING.md)       | Neon, Supabase and PlanetScale sign-in, scopes and permissions                    |
 | [docs/API.md](docs/API.md)               | REST API reference, authentication and the TypeScript SDK                         |
 | [docs/VALIDATION.md](docs/VALIDATION.md) | Test results, benchmarks and known limits from the September 2026 validation runs |

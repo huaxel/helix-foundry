@@ -25,7 +25,28 @@ export class Provider implements ModelProvider {
     let url: string,
       headers: Record<string, string> = { "content-type": "application/json" },
       body: any;
-    if (s.provider === "local") {
+    if (s.provider === "local" && s.localApi === "openai-compatible") {
+      url = (s.baseUrl || "").replace(/\/$/, "") + "/chat/completions";
+      if (s.apiKey) headers.authorization = "Bearer " + s.apiKey;
+      body = {
+        model: s.model,
+        stream: false,
+        temperature: 0,
+        max_tokens: 3072,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "result",
+            strict: true,
+            schema: boundedLists(schema),
+          },
+        },
+      };
+    } else if (s.provider === "local") {
       url = (s.baseUrl || config.ollama).replace(/\/$/, "") + "/api/chat";
       // Size the window to the prompt (JSON averages ~2.8 characters per token)
       // and keep room for the answer, so long prompts are never silently cut.
@@ -92,6 +113,26 @@ export class Provider implements ModelProvider {
       };
     }
     const abort = signal || AbortSignal.timeout(s.timeoutSeconds * 1000);
+    if (s.provider === "local" && s.localApi === "openai-compatible") {
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: abort,
+      });
+      if (!response.ok)
+        throw new AppError(
+          502,
+          `Local OpenAI-compatible server returned HTTP ${response.status}. Check its URL, model, and credentials.`,
+        );
+      const data = (await response.json()) as any;
+      const text = data.choices?.[0]?.message?.content;
+      assert(text, "Local model did not return a structured response");
+      return {
+        value: withoutNullOptionals(JSON.parse(text)),
+        tokens: data.usage?.total_tokens || 0,
+      };
+    }
     if (s.provider === "local") {
       const r = await postLocal(url, JSON.stringify(body), abort);
       assert(
@@ -220,7 +261,11 @@ function strictSchema(schema: any): any {
   return o;
 }
 export async function verifyPinnedModel(settings: ProviderSettings) {
-  if (settings.provider === "local" && settings.model === "qwen3:4b") {
+  if (
+    settings.provider === "local" &&
+    settings.localApi !== "openai-compatible" &&
+    settings.model === "qwen3:4b"
+  ) {
     const r = await fetch((settings.baseUrl || config.ollama) + "/api/tags", {
       signal: AbortSignal.timeout(5000),
     });

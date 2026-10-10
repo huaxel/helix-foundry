@@ -135,7 +135,12 @@ export function ProviderSetup({
       });
     }
   }, [q.data, setup.data, settings]);
-  const s = settings || { provider: "local", model: "qwen3:4b" };
+  const s = settings || {
+    provider: "local",
+    localApi: "openai-compatible",
+    model: "Qwen3.6-35B-A3B-MTP",
+    baseUrl: "http://framearch-juan:8000/v1",
+  };
   const update = (k: string, v: any) => setSettings({ ...s, [k]: v });
   const job = setup.data?.providerJob,
     working = job && ["queued", "running"].includes(job.data.status);
@@ -171,21 +176,30 @@ export function ProviderSetup({
               title={title}
               description={description}
               checked={s.provider === value}
-              onChange={() =>
+              onChange={() => {
+                const savedLocal = q.data?.provider === "local";
                 setSettings({
                   ...s,
                   provider: value,
+                  localApi: value === "local" ? "openai-compatible" : undefined,
                   model:
                     value === "local"
-                      ? "qwen3:4b"
+                      ? savedLocal
+                        ? q.data.model
+                        : "Qwen3.6-35B-A3B-MTP"
                       : value === "claude"
                         ? "claude-sonnet-4-6"
                         : "gpt-5.4-mini",
-                  baseUrl: value === "local" ? q.data?.baseUrl : undefined,
+                  baseUrl:
+                    value === "local"
+                      ? savedLocal
+                        ? q.data.baseUrl
+                        : "http://framearch-juan:8000/v1"
+                      : undefined,
                   apiKey: "",
                   hasKey: q.data?.provider === value && q.data?.hasKey,
-                })
-              }
+                });
+              }}
               icon={
                 value === "local" ? (
                   <Monitor className="provider-logo" aria-hidden="true" />
@@ -201,6 +215,45 @@ export function ProviderSetup({
             />
           ))}
         </div>
+        {s.provider === "local" && (
+          <>
+            <p className="span2 muted">
+              Local inference uses the configured llama.cpp OpenAI-compatible
+              endpoint.
+            </p>
+            {s.localApi === "openai-compatible" && (
+              <>
+                <label className="span2">
+                  API base URL
+                  <input
+                    type="url"
+                    required
+                    placeholder="http://host.docker.internal:8080/v1"
+                    value={s.baseUrl || ""}
+                    onChange={(e) => update("baseUrl", e.target.value)}
+                  />
+                </label>
+                <label>
+                  Model name
+                  <input
+                    required
+                    value={s.model || ""}
+                    onChange={(e) => update("model", e.target.value)}
+                  />
+                </label>
+                <label>
+                  API key (if required)
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={s.apiKey || ""}
+                    onChange={(e) => update("apiKey", e.target.value)}
+                  />
+                </label>
+              </>
+            )}
+          </>
+        )}
         {s.provider !== "local" && (
           <label>
             API key

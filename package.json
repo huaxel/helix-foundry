@@ -19,6 +19,7 @@
     "doctor": "tsx scripts/doctor.ts",
     "migrate": "tsx scripts/migrate.ts",
     "benchmark": "tsx scripts/benchmark.ts",
+    "prune:data": "tsx scripts/prune-data.ts",
     "build:sdk": "pnpm --filter @helix-foundry/shared build && pnpm --filter @helix-foundry/sdk build"
   },
   "dependencies": {

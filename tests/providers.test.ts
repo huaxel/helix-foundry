@@ -70,6 +70,7 @@ for (const provider of ["local", "claude", "openai"] as const)
     const p = new Provider(
       ProviderSchema.parse({
         provider,
+        ...(provider === "local" ? { localApi: "ollama" as const } : {}),
         model: "test",
         apiKey: "test-only",
         baseUrl: "http://127.0.0.1:" + (ollama.address() as any).port,
@@ -106,6 +107,67 @@ for (const provider of ["local", "claude", "openai"] as const)
       });
     ollama.close();
   });
+it("uses llama.cpp through its OpenAI-compatible endpoint without Ollama calls", async () => {
+  const fetchMock = vi.fn(
+    async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("http://127.0.0.1:8080/v1/chat/completions");
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        "Bearer local-secret",
+      );
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe("qwen-local");
+      expect(body.response_format.json_schema.schema.type).toBe("object");
+      return Response.json({
+        choices: [{ message: { content: '{"ready":true}' } }],
+        usage: { total_tokens: 7 },
+      });
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const provider = new Provider(
+    ProviderSchema.parse({
+      provider: "local",
+      localApi: "openai-compatible",
+      model: "qwen-local",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      apiKey: "local-secret",
+    }),
+  );
+  const result = await provider.generate(
+    "system",
+    { safe: "profile" },
+    {
+      type: "object",
+      properties: { ready: { type: "boolean" } },
+      required: ["ready"],
+    },
+  );
+  expect(result).toEqual({ value: { ready: true }, tokens: 7 });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+it("requires a base URL for the OpenAI-compatible local backend", () => {
+  expect(() =>
+    ProviderSchema.parse({
+      provider: "local",
+      localApi: "openai-compatible",
+      model: "qwen-local",
+    }),
+  ).toThrow("Endpoint URL is required");
+});
+it("rejects URL credentials and non-HTTP schemes for llama.cpp", () => {
+  for (const baseUrl of [
+    "file:///tmp/model",
+    "http://user:pass@localhost:8080/v1",
+  ])
+    expect(() =>
+      ProviderSchema.parse({
+        provider: "local",
+        localApi: "openai-compatible",
+        model: "qwen-local",
+        baseUrl,
+      }),
+    ).toThrow();
+});
 it("sizes the local context window to the prompt and refuses what cannot fit", async () => {
   const seen: number[] = [];
   const ollama = createServer(async (req, res) => {
@@ -127,6 +189,7 @@ it("sizes the local context window to the prompt and refuses what cannot fit", a
   const p = new Provider(
     ProviderSchema.parse({
       provider: "local",
+      localApi: "ollama",
       model: "test",
       baseUrl: "http://127.0.0.1:" + (ollama.address() as any).port,
     }),

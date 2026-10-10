@@ -40,6 +40,7 @@ function syncText(c: Card) {
   const s = c.source.data;
   if (s.paused) return "Paused";
   if (s.sync?.mode === "cdc") return "Live changes";
+  if (s.sync?.mode === "manual") return "Re-import to refresh";
   return s.schedule
     ? `Scheduled refresh (${s.schedule} UTC)`
     : "Automatic refresh";

@@ -1,12 +1,22 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtemp, writeFile, mkdir, readdir, rm } from "node:fs/promises";
+import {
+  mkdtemp,
+  writeFile,
+  mkdir,
+  rm,
+  copyFile,
+  stat,
+  readdir,
+} from "node:fs/promises";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execute } from "../services/executor/src/engine.js";
 let dir: string;
+let localRoot: string;
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "foundry-engine-"));
+  localRoot = await mkdtemp(join(tmpdir(), "foundry-mounted-"));
   await mkdir(join(dir, "incoming", "a"), { recursive: true });
   await writeFile(
     join(dir, "incoming", "a", "input.jsonl"),
@@ -17,8 +27,19 @@ beforeAll(async () => {
       .map((r) => JSON.stringify(r))
       .join("\n"),
   );
+  await execute(
+    { mode: "ingest", scope: "a", version: "fixture", file: "input.jsonl" },
+    dir,
+  );
+  await copyFile(
+    join(dir, "datasets", "a", "fixture.parquet"),
+    join(localRoot, "source.parquet"),
+  );
 });
-afterAll(() => rm(dir, { recursive: true, force: true }));
+afterAll(async () => {
+  await rm(dir, { recursive: true, force: true });
+  await rm(localRoot, { recursive: true, force: true });
+});
 describe("isolated dataset execution", () => {
   it("profiles an immutable snapshot and preserves nulls and key evidence", async () => {
     const r = await execute(
@@ -33,6 +54,74 @@ describe("isolated dataset execution", () => {
       nulls: 1,
       sensitive: true,
     });
+  });
+  it("profiles and queries mounted Parquet without persisting another copy", async () => {
+    const sourceFingerprint = await stat(join(localRoot, "source.parquet"));
+    const fingerprint = {
+      size: sourceFingerprint.size,
+      mtimeMs: sourceFingerprint.mtimeMs,
+    };
+    const imported = await execute(
+      {
+        mode: "ingest",
+        scope: "a",
+        version: "mounted",
+        sourcePath: "source.parquet",
+        sourceFingerprint: fingerprint,
+      },
+      dir,
+      localRoot,
+    );
+    expect(imported.profile.rows).toBe(2);
+    await expect(
+      stat(join(dir, "datasets", "a", "mounted.parquet")),
+    ).rejects.toThrow();
+
+    const queried = await execute(
+      {
+        mode: "query",
+        scope: "a",
+        version: "mounted-query",
+        inputs: [
+          {
+            table: "input",
+            version: "mounted",
+            sourcePath: "source.parquet",
+            sourceFingerprint: fingerprint,
+          },
+        ],
+        sql: "SELECT count(*) AS row_count FROM input",
+      },
+      dir,
+      localRoot,
+    );
+    expect(queried.rows).toEqual([{ row_count: "2" }]);
+
+    await expect(
+      execute(
+        {
+          mode: "ingest",
+          scope: "a",
+          version: "changed",
+          sourcePath: "source.parquet",
+          sourceFingerprint: { ...fingerprint, size: fingerprint.size + 1 },
+        },
+        dir,
+        localRoot,
+      ),
+    ).rejects.toThrow("source changed");
+    await expect(
+      execute(
+        {
+          mode: "ingest",
+          scope: "a",
+          version: "escape",
+          sourcePath: "../outside.parquet",
+        },
+        dir,
+        localRoot,
+      ),
+    ).rejects.toThrow();
   });
   it("executes and persists a verified aggregate", async () => {
     const r = await execute(
@@ -52,6 +141,25 @@ describe("isolated dataset execution", () => {
         { region: "US", revenue: "23" },
       ]),
     );
+  });
+  it("applies input filters through Parquet-backed views", async () => {
+    const r = await execute(
+      {
+        mode: "query",
+        scope: "a",
+        version: "filtered",
+        inputs: [
+          {
+            table: "input",
+            version: "one",
+            filters: [{ column: "region", value: "EU" }],
+          },
+        ],
+        sql: "SELECT count(*) AS row_count FROM input",
+      },
+      dir,
+    );
+    expect(r.rows).toEqual([{ row_count: "1" }]);
   });
   it("blocks external files, network reads, multiple statements, and undeclared tables", async () => {
     for (const sql of [

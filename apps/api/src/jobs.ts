@@ -26,8 +26,9 @@ export function startWorker(store: Store) {
   let busy = false,
     stopped = false;
   const tick = async () => {
-    if (busy || stopped) return;
+    if (busy || stopped) return false;
     busy = true;
+    let didWork = false;
     try {
       const workspaces = await store.list("global", "workspaceRef");
       for (const workspace of workspaces) {
@@ -98,6 +99,7 @@ export function startWorker(store: Store) {
             return true;
           });
           if (!claimed) continue;
+          didWork = true;
           const heartbeat = setInterval(
             () =>
               void transaction(store, scope, async (tx) => {
@@ -212,19 +214,29 @@ export function startWorker(store: Store) {
           }
         }
       }
+      return didWork;
     } catch (e) {
       console.error("Worker:", e instanceof Error ? e.message : e);
+      return false;
     } finally {
       busy = false;
     }
   };
-  let running = tick();
-  const timer = setInterval(() => {
-    if (!busy) running = tick();
-  }, 2000);
+  let idleDelay = 2000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let running: Promise<boolean> = Promise.resolve(false);
+  const poll = async () => {
+    if (stopped) return;
+    running = tick();
+    const didWork = await running;
+    if (stopped) return;
+    idleDelay = didWork ? 2000 : Math.min(idleDelay * 2, 8000);
+    timer = setTimeout(() => void poll(), idleDelay);
+  };
+  void poll();
   return async () => {
     stopped = true;
-    clearInterval(timer);
+    if (timer) clearTimeout(timer);
     await stopStreams();
     await running;
   };

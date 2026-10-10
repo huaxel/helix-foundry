@@ -2,7 +2,7 @@ import { config } from "../apps/api/src/config.js";
 const checks: [string, string][] = [
   ["HelixDB", config.helix + "/readyz"],
   ["DuckDB executor", config.executor + "/health"],
-  ["Local model", config.ollama + "/api/tags"],
+  ["Local model", config.modelEndpoint.replace(/\/$/, "") + "/models"],
 ];
 let errors = 0;
 for (const [name, url] of checks) {

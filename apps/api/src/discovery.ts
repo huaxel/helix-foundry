@@ -65,6 +65,7 @@ const labels: Record<string, string> = {
   posthog: "PostHog",
   stripe: "Stripe",
   s3: "S3",
+  local: "Local",
   postgres: "PostgreSQL",
   mysql: "MySQL",
   rest: "REST",
@@ -334,7 +335,11 @@ export async function suggestOntology(
       column: c.name,
       field,
       integer: !field && /INT/.test(c.type),
-      unique: !field && c.distinct > 0 && c.distinct === x.rows - c.nulls,
+      unique:
+        !x.d.data.profile.approximate &&
+        !field &&
+        c.distinct > 0 &&
+        c.distinct === x.rows - c.nulls,
       key: !field && c.primaryKey,
     };
     cols.push(col);

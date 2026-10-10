@@ -14,10 +14,11 @@ import {
 import { config } from "../config.js";
 import { assert, seal } from "../security.js";
 import { resource, transaction, type Store } from "../store.js";
-import { discover } from "../connectors.js";
+import { discover, resolveLocalParquet } from "../connectors.js";
 import {
   ingestFile,
   ingestRows,
+  removeStagedInput,
   queryDatasets,
   seedDemo,
 } from "../datasets.js";
@@ -88,13 +89,18 @@ export function registerDataRoutes(
       part.file,
       createWriteStream(resolve(config.dataDir, "incoming", a.scope, file)),
     );
-    assert(!part.file.truncated, "File exceeds 256 MB limit");
-    return ingestFile(
-      store,
-      a.scope,
-      part.filename.replace(/\.[^.]+$/, ""),
-      file,
-    );
+    try {
+      assert(!part.file.truncated, "File exceeds 256 MB limit");
+      return await ingestFile(
+        store,
+        a.scope,
+        part.filename.replace(/\.[^.]+$/, ""),
+        file,
+      );
+    } catch (error) {
+      await removeStagedInput(a.scope, file);
+      throw error;
+    }
   });
   app.post("/api/v1/workspaces/:w/datasets/:id/preview", async (req: any) => {
     const a = await access(req);
@@ -152,9 +158,23 @@ export function registerDataRoutes(
       const a = await access(req),
         ds = await store.get(a.scope, req.params.id);
       assert(ds?.kind === "dataset", "Dataset unavailable", 404);
+      const version = await store.get(a.scope, ds.data.activeVersion);
+      assert(version?.kind === "version", "Dataset version unavailable", 404);
       reply
         .header("content-disposition", `attachment; filename="dataset.parquet"`)
         .type("application/octet-stream");
+      if (version.data.sourcePath) {
+        assert(
+          version.data.sourceFingerprint,
+          "Mounted dataset version metadata is incomplete",
+          409,
+        );
+        const source = await resolveLocalParquet(
+          version.data.sourcePath,
+          version.data.sourceFingerprint,
+        );
+        return createReadStream(source.absolutePath);
+      }
       return createReadStream(
         resolve(
           config.dataDir,

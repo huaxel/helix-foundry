@@ -10,6 +10,10 @@ Install and start Helix Foundry with Docker Compose, prove that it is healthy, a
 curl -fsS http://localhost:<PORT>/api/health
 ```
 
+## Local-fork inference override
+
+This checkout is adapted to use the remote llama.cpp OpenAI-compatible endpoint, configured by `MODEL_ENDPOINT` (default `http://framearch-juan:8000/v1`) and model `Qwen3.6-35B-A3B-MTP`. Do not start, download or restore Ollama or its model volume. Ignore the upstream Ollama-profile instructions below; use plain `docker compose up -d` and configure Local inference through llama.cpp.
+
 `<PORT>` is 3001 unless you chose another port. Guided setup in the browser (AI → Data → Ontology) belongs to the user, unless they ask you to do part of it.
 
 ## Ground rules

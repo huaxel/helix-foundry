@@ -1,21 +1,27 @@
 import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
-import { resolve, dirname } from "node:path";
+import { mkdir, mkdtemp, rm, stat, realpath } from "node:fs/promises";
+import { resolve, dirname, isAbsolute, sep } from "node:path";
 import type { DatasetProfile } from "../../../packages/shared/src/index.js";
 export const quote = (v: string) => '"' + v.replaceAll('"', '""') + '"';
 const lit = (v: string) => "'" + v.replaceAll("'", "''") + "'";
 const safePart = (s: string) => /^[a-zA-Z0-9_-]{1,100}$/.test(s);
+const isMemoryLimitError = (error: unknown) =>
+  /out of memory|memory limit|could not allocate/i.test(String(error));
 export type Execution = {
   mode: "ingest" | "query" | "export";
   scope: string;
   version?: string;
   file?: string;
+  sourcePath?: string;
+  sourceFingerprint?: { size: number; mtimeMs: number };
   format?: string;
   schema?: { name: string; type: string }[];
   inputs?: {
     table: string;
     version: string;
+    sourcePath?: string;
+    sourceFingerprint?: { size: number; mtimeMs: number };
     aliases?: string[];
     filters?: { column: string; value: string | number | boolean | null }[];
   }[];
@@ -23,39 +29,81 @@ export type Execution = {
   persist?: boolean;
   offset?: number;
   limit?: number;
+  approximateProfile?: boolean;
 };
 export async function execute(
   job: Execution,
   root = resolve(process.env.DATA_DIR || ".data"),
+  localRoot = process.env.LOCAL_DATA_PATH || "/mnt/parquet",
 ) {
   if (!safePart(job.scope) || (job.version && !safePart(job.version)))
     throw new Error("Invalid storage identity");
   const out = resolve(root, "datasets", job.scope, `${job.version}.parquet`);
-  await mkdir(dirname(out), { recursive: true });
+  if (!job.sourcePath) await mkdir(dirname(out), { recursive: true });
+  const resolveSource = async (
+    sourcePath: string,
+    expected: { size: number; mtimeMs: number },
+  ) => {
+    if (
+      isAbsolute(sourcePath) ||
+      !expected ||
+      !Number.isFinite(expected.size) ||
+      !Number.isFinite(expected.mtimeMs)
+    )
+      throw new Error("Invalid mounted source reference");
+    const sourceRoot = await realpath(localRoot);
+    const source = await realpath(resolve(sourceRoot, sourcePath));
+    if (
+      !source.startsWith(sourceRoot + sep) ||
+      !source.toLowerCase().endsWith(".parquet")
+    )
+      throw new Error(
+        "Mounted source must be a Parquet file inside the configured root",
+      );
+    const current = await stat(source);
+    if (!current.isFile())
+      throw new Error("Mounted source is not a regular file");
+    if (current.size !== expected.size || current.mtimeMs !== expected.mtimeMs)
+      throw new Error(
+        "Mounted Parquet source changed; re-import it to refresh the dataset",
+      );
+    return source;
+  };
   const scratchRoot = resolve(root, "scratch");
   await mkdir(scratchRoot, { recursive: true });
   const scratch = await mkdtemp(resolve(scratchRoot, "executor-"));
   let db: DuckDBInstance | undefined;
   let c: DuckDBConnection | undefined;
+  let inputFingerprint = job.sourceFingerprint;
   try {
     db = await DuckDBInstance.create(":memory:", {
       memory_limit: process.env.DUCKDB_MEMORY || "512MB",
-      threads: "2",
-      temp_directory: scratch,
-      max_temp_directory_size: "2GB",
+      threads: process.env.DUCKDB_THREADS || "1",
+      temp_directory: process.env.DUCKDB_TEMP_DIR || scratch,
+      max_temp_directory_size: process.env.DUCKDB_TEMP_LIMIT || "2GB",
       allow_unsigned_extensions: "false",
       autoinstall_known_extensions: "false",
       autoload_known_extensions: "false",
+      // Large snapshots and DISTINCT profiling need headroom; the order of
+      // result rows is never relied on, so skip insertion-order bookkeeping.
+      preserve_insertion_order: "false",
     });
     c = await db.connect();
     if (job.mode === "ingest") {
-      if (!job.file || !/^[-\w]+\.(csv|json|jsonl|parquet)$/.test(job.file))
+      if (
+        !job.sourcePath &&
+        (!job.file || !/^[-\w]+\.(csv|json|jsonl|parquet)$/.test(job.file))
+      )
         throw new Error("Invalid input file");
-      const file = resolve(root, "incoming", job.scope, job.file);
+      if (job.sourcePath && job.file) throw new Error("Ambiguous input");
+      const file = job.sourcePath
+        ? await resolveSource(job.sourcePath, job.sourceFingerprint!)
+        : resolve(root, "incoming", job.scope, job.file!);
       const info = await stat(file);
-      const fn = job.file.endsWith(".csv")
+      inputFingerprint ??= { size: info.size, mtimeMs: info.mtimeMs };
+      const fn = file.toLowerCase().endsWith(".csv")
         ? "read_csv_auto"
-        : job.file.endsWith(".parquet")
+        : file.toLowerCase().endsWith(".parquet")
           ? "read_parquet"
           : "read_json_auto";
       if (info.size === 0 && job.schema?.length) {
@@ -74,25 +122,31 @@ export async function execute(
           `CREATE TABLE result (${job.schema.map((col) => quote(col.name) + " " + (typeMap[col.type.toLowerCase()] || "VARCHAR")).join(",")})`,
         );
       } else
-        await c.run(`CREATE TABLE result AS SELECT * FROM ${fn}(${lit(file)})`);
+        // A view keeps the snapshot streaming: profiling and the parquet copy
+        // read the file column-wise instead of materializing it in memory, so
+        // large or very wide tables fit within the executor's memory budget.
+        await c.run(`CREATE VIEW result AS SELECT * FROM ${fn}(${lit(file)})`);
     } else {
       for (const input of job.inputs || []) {
         if (!safePart(input.table) || !safePart(input.version))
           throw new Error("Invalid input");
-        await c.run(
-          `CREATE TABLE ${quote(input.table)} AS SELECT * FROM read_parquet(${lit(resolve(root, "datasets", job.scope, input.version + ".parquet"))})`,
-        );
-        for (const filter of input.filters || []) {
+        const file = input.sourcePath
+          ? await resolveSource(input.sourcePath, input.sourceFingerprint!)
+          : resolve(root, "datasets", job.scope, input.version + ".parquet");
+        const conditions = (input.filters || []).map((filter) => {
           const value =
             filter.value === null
               ? "NULL"
               : typeof filter.value === "string"
                 ? lit(filter.value)
                 : String(filter.value);
-          await c.run(
-            `DELETE FROM ${quote(input.table)} WHERE NOT (${quote(filter.column)} IS NOT DISTINCT FROM ${value})`,
-          );
-        }
+          return `${quote(filter.column)} IS NOT DISTINCT FROM ${value}`;
+        });
+        // Materialize only the authorized, filtered snapshot before external
+        // access is disabled for the user query below.
+        await c.run(
+          `CREATE TABLE ${quote(input.table)} AS SELECT * FROM read_parquet(${lit(file)})${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}`,
+        );
       }
       const aliasCounts = new Map<string, number>();
       for (const input of job.inputs || [])
@@ -134,7 +188,7 @@ export async function execute(
       const path = out.replace(/\.parquet$/, ".csv");
       throw new Error("Use dataset Parquet export or paginated CSV export");
     }
-    if (job.mode === "ingest" || job.persist)
+    if ((job.mode === "ingest" && !job.sourcePath) || job.persist)
       await c.run(`COPY result TO ${lit(out)} (FORMAT PARQUET)`);
     const rows = Number(
       (
@@ -149,52 +203,107 @@ export async function execute(
         `SELECT * FROM result LIMIT ${Math.min(job.limit || 50, 1000)} OFFSET ${Math.max(job.offset || 0, 0)}`,
       )
     ).getRowObjectsJson();
+    // Profile one column at a time: exact counts with a per-column fallback
+    // to approximate under memory pressure, so a single wide column never
+    // strips key evidence from the other columns.
+    let approximateDistincts = job.approximateProfile === true;
     const columns = [];
-    for (const col of schema) {
+    for (const [i, col] of schema.entries()) {
       const name = String(col.column_name),
         q = quote(name);
-      const p = (
-        await c.runAndReadAll(
-          `SELECT count(*)-count(${q}) AS null_count, count(DISTINCT ${q}) distincts FROM result`,
-        )
-      ).getRowObjectsJson()[0];
+      let null_count: unknown, distincts: unknown, exact = !approximateDistincts;
+      if (exact) {
+        try {
+          const row = (
+            await c.runAndReadAll(
+              `SELECT count(*)-count(${q}) AS null_count, count(DISTINCT ${q}) AS distincts FROM result`,
+            )
+          ).getRowObjectsJson()[0];
+          null_count = row.null_count;
+          distincts = row.distincts;
+        } catch (error) {
+          if (!isMemoryLimitError(error)) throw error;
+          approximateDistincts = true;
+          exact = false;
+        }
+      }
+      if (!exact) {
+        const row = (
+          await c.runAndReadAll(
+            `SELECT count(*)-count(${q}) AS null_count, approx_count_distinct(${q}) AS distincts FROM result`,
+          )
+        ).getRowObjectsJson()[0];
+        null_count = row.null_count;
+        distincts = row.distincts;
+      }
       columns.push({
         name,
         type: String(col.column_type),
-        nulls: Number(p.null_count),
-        distinct: Number(p.distincts),
+        nulls: Number(null_count),
+        distinct: Number(distincts),
         examples: sample.slice(0, 3).map((r) => r[name]),
         sensitive:
           /email|phone|ssn|password|secret|token|address|birth|credit/i.test(
             name,
           ),
         primaryKey:
+          exact &&
           rows > 0 &&
-          Number(p.null_count) === 0 &&
-          Number(p.distincts) === rows,
+          Number(null_count) === 0 &&
+          Number(distincts) === rows,
       });
     }
-    const fp = (
-      await c.runAndReadAll(
-        "SELECT bit_xor(hash(result)) h, sum(hash(result)::HUGEINT) hash_sum FROM result",
-      )
-    ).getRowObjectsJson()[0];
-    const duplicateRows = Number(
-      (
-        await c.runAndReadAll(
-          "SELECT (SELECT count(*) FROM result) - count(*) AS duplicate_rows FROM (SELECT DISTINCT * FROM result)",
-        )
-      ).getRowObjectsJson()[0].duplicate_rows,
-    );
+    // Avoid hashing/materializing whole rows in explicitly low-memory mode.
+    let approximateDuplicates = job.approximateProfile === true;
+    let duplicateRows: number | undefined;
+    let rowFingerprint: unknown = inputFingerprint ?? sample;
+    if (!approximateDuplicates) {
+      let rowStats: Record<string, unknown> | undefined;
+      try {
+        rowStats = (
+          await c.runAndReadAll(
+            "WITH row_hashes AS (SELECT hash(result) AS h FROM result) SELECT bit_xor(h) AS fingerprint, sum(h::HUGEINT) AS hash_sum, count(*) - count(DISTINCT h) AS duplicate_rows FROM row_hashes",
+          )
+        ).getRowObjectsJson()[0];
+      } catch (error) {
+        if (!isMemoryLimitError(error)) throw error;
+        approximateDuplicates = true;
+        try {
+          rowStats = (
+            await c.runAndReadAll(
+              "WITH row_hashes AS (SELECT hash(result) AS h FROM result) SELECT bit_xor(h) AS fingerprint, approx_count_distinct(h) AS unique_rows FROM row_hashes",
+            )
+          ).getRowObjectsJson()[0];
+        } catch (approximateError) {
+          if (!isMemoryLimitError(approximateError)) throw approximateError;
+        }
+      }
+      if (rowStats) {
+        rowFingerprint = approximateDuplicates
+          ? rowStats.fingerprint
+          : { fingerprint: rowStats.fingerprint, hash_sum: rowStats.hash_sum };
+        duplicateRows = approximateDuplicates
+          ? Math.max(0, rows - Number(rowStats.unique_rows))
+          : Number(rowStats.duplicate_rows);
+      }
+    }
     const profile: DatasetProfile = {
       rows,
-      duplicateRows,
+      ...(duplicateRows === undefined ? {} : { duplicateRows }),
       columns,
       sample,
       fingerprint: createHash("sha256")
-        .update(JSON.stringify([schema, rows, fp]))
+        .update(JSON.stringify([schema, rows, rowFingerprint]))
         .digest("hex"),
+      ...(approximateDistincts || approximateDuplicates
+        ? { approximate: true }
+        : {}),
     };
+    if (job.mode === "ingest" && job.sourcePath)
+      await resolveSource(job.sourcePath, job.sourceFingerprint!);
+    for (const input of job.inputs || [])
+      if (input.sourcePath)
+        await resolveSource(input.sourcePath, input.sourceFingerprint!);
     return { profile, version: job.version, rows: sample };
   } finally {
     c?.closeSync();

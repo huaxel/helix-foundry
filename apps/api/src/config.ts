@@ -9,11 +9,17 @@ export const config = {
   origin: process.env.APP_ORIGIN || "http://localhost:5173",
   helix: process.env.HELIX_URL || "http://127.0.0.1:6969",
   executor: process.env.EXECUTOR_URL || "http://127.0.0.1:3002",
+  executorTimeoutMs: Number(process.env.EXECUTOR_TIMEOUT_MS) || 900_000,
   internalKey: process.env.INTERNAL_KEY || "",
   encryptionKey: process.env.ENCRYPTION_KEY || "",
   dataDir: resolve(process.env.DATA_DIR || ".data"),
   inlineWorker: process.env.INLINE_WORKER !== "false",
+  modelEndpoint: process.env.MODEL_ENDPOINT || "http://framearch-juan:8000/v1",
   ollama: process.env.OLLAMA_URL || "http://127.0.0.1:11434",
+  // Read-only root for the local Parquet connector. Inside Docker this must
+  // match the mount in compose.yaml.
+  localDataPath: process.env.LOCAL_DATA_PATH || "/mnt/parquet",
+  localDataInclude: process.env.LOCAL_DATA_INCLUDE || "**/*.parquet",
   // Requests per minute per IP; local acceptance runs raise it.
   rateLimit: Number(process.env.RATE_LIMIT_MAX) || 240,
 };

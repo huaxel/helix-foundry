@@ -68,17 +68,47 @@ export type HostedConnection = {
   config: { hostedConnectionId: string };
   discovery: any;
 };
-export const ProviderSchema = z.object({
-  provider: z.enum(["local", "claude", "openai"]),
-  model: z.string().min(1).max(150),
-  baseUrl: z.url().optional(),
-  apiKey: z.string().optional(),
-  allowRawData: z.boolean().default(false),
-  dailyTokens: z.number().int().min(1000).max(10_000_000).default(200_000),
-  maxCalls: z.number().int().min(1).max(20).default(20),
-  timeoutSeconds: z.number().int().min(30).max(1800).default(600),
-  continuous: z.boolean().default(true),
-});
+export const ProviderSchema = z
+  .object({
+    provider: z.enum(["local", "claude", "openai"]),
+    localApi: z.enum(["ollama", "openai-compatible"]).default("ollama"),
+    model: z.string().min(1).max(150),
+    baseUrl: z.url().optional(),
+    apiKey: z.string().optional(),
+    allowRawData: z.boolean().default(false),
+    dailyTokens: z.number().int().min(1000).max(10_000_000).default(200_000),
+    maxCalls: z.number().int().min(1).max(20).default(20),
+    timeoutSeconds: z.number().int().min(30).max(1800).default(600),
+    continuous: z.boolean().default(true),
+  })
+  .superRefine((settings, ctx) => {
+    if (
+      settings.provider !== "local" ||
+      settings.localApi !== "openai-compatible"
+    )
+      return;
+    if (!settings.baseUrl) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "Endpoint URL is required",
+      });
+      return;
+    }
+    const endpoint = new URL(settings.baseUrl);
+    if (!["http:", "https:"].includes(endpoint.protocol))
+      ctx.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "Use an HTTP(S) endpoint URL",
+      });
+    if (endpoint.username || endpoint.password)
+      ctx.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "Use the API key field instead of URL credentials",
+      });
+  });
 export type ProviderSettings = z.infer<typeof ProviderSchema>;
 export const OnboardingProviderSchema = ProviderSchema.extend({
   advanceToData: z.boolean().optional(),
@@ -96,6 +126,7 @@ export type ColumnProfile = {
 export type DatasetProfile = {
   rows: number;
   duplicateRows?: number;
+  approximate?: boolean;
   columns: ColumnProfile[];
   sample: Record<string, unknown>[];
   fingerprint: string;

@@ -79,8 +79,9 @@ export async function providerSettings(store: Store, scope: string) {
       }
     : ProviderSchema.parse({
         provider: "local",
-        model: "qwen3:4b",
-        baseUrl: config.ollama,
+        localApi: "openai-compatible",
+        model: "Qwen3.6-35B-A3B-MTP",
+        baseUrl: config.modelEndpoint,
       });
 }
 async function datasetsMap(store: Store, scope: string) {

@@ -26,7 +26,7 @@ const guides: Record<string, Guide> = {
         mode first if you want to try Foundry without live data.
       </li>
       <li>
-        Name it “Helix Foundry”, then set <strong>Read</strong> for the objects
+        Name it "Helix Foundry", then set <strong>Read</strong> for the objects
         you want (for example Customers, Products, Subscriptions, Invoices,
         Charges, Payment Intents, Disputes, Payouts, Balance). Leave everything
         else as <strong>None</strong>.
@@ -136,6 +136,29 @@ GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'foundry'@'%';`}</pre>
       <p>
         For other S3-compatible storage, use its read-only keys and set the
         custom endpoint.
+      </p>
+    </>
+  ),
+  local: () => (
+    <>
+      <p>
+        Set the <code>LOCAL_DATA_PATH</code> environment variable in{" "}
+        <code>.env</code> to the absolute path of your Parquet folder, then run{" "}
+        <code>docker compose --profile local up -d</code> to remount it. For
+        example:
+      </p>
+      <pre>{`LOCAL_DATA_PATH=/path/to/parquet-exports
+LOCAL_DATA_INCLUDE=**/*.parquet`}</pre>
+      <p>
+        Set <code>LOCAL_DATA_INCLUDE</code> to a path glob, such as{" "}
+        <code>exports/2024/**/*.parquet</code>. The picker shows matching files;
+        choose <strong>Import all matching files</strong> to start them in
+        batches of 100. Nothing imports automatically on startup.
+      </p>
+      <p>
+        The folder is mounted read-only into the app container. Files are
+        imported as snapshots without modifying the originals. To refresh,
+        re-import from the same source.
       </p>
     </>
   ),
