@@ -14,6 +14,32 @@ curl -fsS http://localhost:<PORT>/api/health
 
 This checkout is adapted to use the remote llama.cpp OpenAI-compatible endpoint, configured by `MODEL_ENDPOINT` (default `http://framearch-juan:8000/v1`) and model `Qwen3.6-35B-A3B-MTP`. Do not start, download or restore Ollama or its model volume. Ignore the upstream Ollama-profile instructions below; use plain `docker compose up -d` and configure Local inference through llama.cpp.
 
+## Local-fork security architecture (Tailscale + password)
+
+This fork replaces upstream loopback-only/no-sign-in with password auth over the owner's Tailscale network. Upstream's "never expose beyond this computer" still applies to everything else: do not publish beyond the tailnet (no public internet, no LAN/WiFi, no reverse proxy or tunnel to the public).
+
+Required `.env` settings (show only these lines, never the password value):
+
+```sh
+grep -E '^(AUTH_PASSWORD|PUBLIC_ORIGIN|PUBLIC_PORT|TAILSCALE_IP|MODEL_ENDPOINT)=' .env
+```
+
+- `AUTH_PASSWORD`: strong password (8+ chars, enforced at boot). Enables sign-in for browser and API; every `/api/*` route then requires a password session or a workspace Bearer token. Unset means loopback-owner mode (no sign-in).
+- `PUBLIC_ORIGIN`: the exact Tailscale URL users open, e.g. `http://100.81.226.52:3001`. Must match the browser URL exactly.
+- `TAILSCALE_IP`: this machine's Tailscale IP. Compose publishes the app on loopback (for healthchecks) and on this IP (for the tailnet), never on LAN.
+- The app refuses to boot a non-loopback origin without `AUTH_PASSWORD`, and refuses weak passwords. This is fail-closed, not a warning.
+
+Verify after start (replace `<TAIL>` with the Tailscale IP or MagicDNS name):
+
+```sh
+curl -fsS http://localhost:<PORT>/api/health          # public, Docker healthcheck
+curl -fsS http://<TAIL>:<PORT>/api/v1/me               # 401 without sign-in
+curl -fsS -X POST http://<TAIL>:<PORT>/api/auth/login \
+  -H 'content-type: application/json' -d '{"password":"..."}'  # use the real password, never log it
+```
+
+The login above must return `{"ok":true}` and set a `foundry_session` cookie; subsequent `/api/v1/me` with that cookie must return 200. Browser sign-in is at the app URL (a password form appears when unauthenticated). Workspace Bearer tokens continue to work without cookies.
+
 `<PORT>` is 3001 unless you chose another port. Guided setup in the browser (AI → Data → Ontology) belongs to the user, unless they ask you to do part of it.
 
 ## Ground rules

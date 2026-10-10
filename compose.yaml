@@ -9,6 +9,8 @@ x-app: &app
   environment: &env
     ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Run scripts/setup.sh first}
     INTERNAL_KEY: ${INTERNAL_KEY:?Run scripts/setup.sh first}
+    AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+    HOST: 0.0.0.0
     APP_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:3001}
     HELIX_URL: http://helix:8080
     EXECUTOR_URL: http://executor:3002
@@ -41,6 +43,10 @@ services:
       PLANETSCALE_CLIENT_SECRET: ${PLANETSCALE_CLIENT_SECRET:-}
     ports:
       - "127.0.0.1:${PUBLIC_PORT:-3001}:3001"
+      # Tailnet access for password-protected deployments. TAILSCALE_IP is
+      # this machine's Tailscale IP; requires AUTH_PASSWORD and a matching
+      # PUBLIC_ORIGIN. The app refuses non-loopback origins without a password.
+      - "${TAILSCALE_IP:-100.81.226.52}:${PUBLIC_PORT:-3001}:3001"
     healthcheck:
       test:
         [

@@ -154,10 +154,11 @@ Open **http://localhost:5173**. `pnpm dev` runs the API on 3001, the executor on
 
 ## Security model
 
-Helix Foundry is built for one person on their own computer. There are no accounts and no sign-in, so anyone who can reach the app controls every workspace.
+This fork serves one owner over their Tailscale network with password sign-in (see `AGENTS.md` for the full architecture). Set `AUTH_PASSWORD`, `PUBLIC_ORIGIN`, and `TAILSCALE_IP` in `.env`; the app refuses non-loopback origins without a password.
 
-- The app is published on `127.0.0.1` only. Never expose it with a reverse proxy, tunnel or port forward, and never publish the internal HelixDB or executor ports.
-- The API rejects requests whose `Host` is not this computer, and browser changes from any other origin, with `403`.
+- The app is published on `127.0.0.1` (healthchecks, local use) and on this machine's Tailscale IP only. Never expose it beyond the tailnet: no public internet, no LAN/WiFi, no reverse proxy or tunnel outward, and never publish the internal HelixDB or executor ports.
+- Every `/api/*` route requires a password session (browser cookie) or a workspace Bearer token, except `/api/health` and `/api/auth/*`. The predictable local-session id is never accepted via cookie. Login is rate-limited.
+- The API rejects requests whose `Host` is not the configured origin's host, and browser changes from any other origin, with `403`.
 - Connector and AI credentials are encrypted with `ENCRYPTION_KEY` from `.env`. Keep `.env` and backups private and out of git. If you lose the key, stored credentials cannot be recovered. Do not try to rotate it by replacing the value.
 - Generated SQL runs in a separate DuckDB executor on an internal network with no internet access, no connector credentials, no Linux capabilities, and memory and process limits.
 - Scripts and the SDK use workspace-scoped API tokens from **Settings → Developer tools**. Tokens are read-only unless you grant write access.

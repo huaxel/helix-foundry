@@ -22,10 +22,36 @@ export const config = {
   localDataInclude: process.env.LOCAL_DATA_INCLUDE || "**/*.parquet",
   // Requests per minute per IP; local acceptance runs raise it.
   rateLimit: Number(process.env.RATE_LIMIT_MAX) || 240,
+  // Password for browser/API access over a network (e.g. Tailscale). When
+  // set, every API route requires a password session or a workspace token;
+  // when unset, loopback requests act as the local owner (no sign-in).
+  authPassword: process.env.AUTH_PASSWORD || "",
+  requireAuth: (process.env.AUTH_PASSWORD || "").length > 0,
 };
 export function requireSecrets() {
   if (config.encryptionKey.length < 32 || config.internalKey.length < 32)
     throw new Error(
       "Run ./scripts/setup.sh to generate ENCRYPTION_KEY and INTERNAL_KEY (32+ characters).",
+    );
+  if (config.authPassword && config.authPassword.length < 8)
+    throw new Error("AUTH_PASSWORD must be at least 8 characters when set.");
+  // Fail closed: a non-loopback origin means the deployment intends network
+  // access, so password auth must be on. Loopback origins keep the no-sign-in
+  // owner behavior for local use.
+  let originHost = "";
+  try {
+    originHost = new URL(config.origin).hostname;
+  } catch {
+    originHost = "";
+  }
+  const originLoopback =
+    originHost === "localhost" ||
+    originHost.endsWith(".localhost") ||
+    originHost === "127.0.0.1" ||
+    originHost === "::1" ||
+    originHost === "[::1]";
+  if (!originLoopback && !config.requireAuth)
+    throw new Error(
+      `Refusing to serve non-loopback origin ${config.origin} without AUTH_PASSWORD. Set a password or use a loopback origin.`,
     );
 }

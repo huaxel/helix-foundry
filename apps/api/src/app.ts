@@ -20,6 +20,14 @@ import {
 } from "../../../packages/shared/src/index.js";
 import { config } from "./config.js";
 import { assert, digest } from "./security.js";
+import {
+  SESSION_COOKIE,
+  SESSION_MAX_AGE_SECONDS,
+  createPasswordSession,
+  isSessionCookieId,
+  revokePasswordSession,
+  verifyPassword,
+} from "./auth.js";
 import { resource, transaction, type Store } from "./store.js";
 import {
   generationKinds,
@@ -131,24 +139,50 @@ export async function createApp(store: Store) {
     );
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && req.headers.origin)
       assert(sameApp(req.headers.origin), "Origin is not allowed", 403);
+    // API documentation reveals the full surface; require auth for it when
+    // the deployment does. Static app assets stay public so login loads.
+    if (config.requireAuth && req.url.startsWith("/api/docs"))
+      await user(req);
   });
   // Scripts and the SDK may still use an API token; a token that is wrong
-  // fails rather than falling back to the local owner.
+  // fails rather than falling back to the local owner. Browsers use a
+  // password session cookie when requireAuth is on. With no credentials and
+  // no password configured, loopback requests act as the local owner.
   async function user(req: any) {
     const header = req.headers.authorization;
-    if (header === undefined) return localIdentity();
-    const bearer = /^Bearer (.+)$/.exec(header)?.[1];
-    assert(bearer, "Use an API token: Authorization: Bearer <token>", 401);
-    const t = await store.get("global", digest(bearer));
-    assert(
-      t?.kind === "token" &&
-        (!t.data.expiresAt || t.data.expiresAt > Date.now()),
-      "API token is invalid or revoked",
-      401,
-    );
-    const u = await store.get("global", t.data.userId);
-    assert(u, "API token is invalid or revoked", 401);
-    return { user: u, session: t };
+    if (header !== undefined) {
+      const bearer = /^Bearer (.+)$/.exec(header)?.[1];
+      assert(bearer, "Use an API token: Authorization: Bearer <token>", 401);
+      const t = await store.get("global", digest(bearer));
+      assert(
+        t?.kind === "token" &&
+          (!t.data.expiresAt || t.data.expiresAt > Date.now()),
+        "API token is invalid or revoked",
+        401,
+      );
+      const u = await store.get("global", t.data.userId);
+      assert(u, "API token is invalid or revoked", 401);
+      return { user: u, session: t };
+    }
+    const sessionId = req.cookies?.[SESSION_COOKIE];
+    if (isSessionCookieId(sessionId)) {
+      // Only password-created sessions are valid here. The predictable
+      // local-session id and API tokens are never accepted via cookie.
+      const s = await store.get("global", sessionId);
+      assert(
+        s?.kind === "session" &&
+          s.data.viaPassword === true &&
+          (!s.data.expiresAt || s.data.expiresAt > Date.now()),
+        "Session expired. Log in again.",
+        401,
+      );
+      const u = await store.get("global", s.data.userId);
+      assert(u, "Session expired. Log in again.", 401);
+      return { user: u, session: s };
+    }
+    if (config.requireAuth)
+      assert(false, "Authentication required. Log in.", 401);
+    return localIdentity();
   }
   async function access(
     req: any,
@@ -267,6 +301,43 @@ export async function createApp(store: Store) {
     return identity;
   }
   app.get("/api/health", async () => ({ ok: true, service: "helix-foundry" }));
+  // Password sign-in for network deployments. Rate-limited per IP on top of
+  // the global limit; a wrong password never reveals whether auth is on.
+  app.post(
+    "/api/auth/login",
+    {
+      config: {
+        rateLimit: { max: 10, timeWindow: "1 minute" },
+      },
+    },
+    async (req, reply) => {
+      const { password } = z
+        .object({ password: z.string().min(1).max(200) })
+        .parse(req.body);
+      // Provision the owner user on first run so the session has an owner.
+      const { user } = await localIdentity();
+      assert(
+        config.requireAuth && (await verifyPassword(password)),
+        "Invalid password",
+        401,
+      );
+      const session = await createPasswordSession(store, user.id);
+      reply.setCookie(SESSION_COOKIE, session.id, {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        maxAge: SESSION_MAX_AGE_SECONDS,
+      });
+      return { ok: true };
+    },
+  );
+  app.post("/api/auth/logout", async (req, reply) => {
+    const sessionId = req.cookies?.[SESSION_COOKIE];
+    if (isSessionCookieId(sessionId))
+      await revokePasswordSession(store, sessionId).catch(() => {});
+    reply.clearCookie(SESSION_COOKIE, { path: "/" });
+    return { ok: true };
+  });
   app.get("/api/v1/me", async (req) => {
     const a = await user(req),
       members = (await store.list("global", "member")).filter(
@@ -417,7 +488,10 @@ export async function createApp(store: Store) {
       r.kind === "object" ? await effectiveObject(store, a.scope, r) : r,
     );
   });
-  app.get("/api/openapi.json", async () => app.swagger());
+  app.get("/api/openapi.json", async (req) => {
+    await user(req);
+    return app.swagger();
+  });
   const web = resolve("apps/web/dist");
   if (existsSync(web)) {
     await app.register(staticFiles, { root: web });

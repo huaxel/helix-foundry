@@ -25,6 +25,7 @@ import { api } from "./api";
 import { WorkspaceContext, Loading, type AskContext } from "./ui";
 import { Button, SkeletonText, readStorage, writeStorage } from "./kit";
 import { Shell } from "./shell/Shell";
+import { LoginPage } from "./login";
 import { LiveActivityProvider } from "./shell/live";
 import {
   ChromeBoundary,
@@ -180,6 +181,8 @@ function App() {
   }, [toast]);
   // No sign-in: the API sets up this computer's workspace on first run.
   if (me.isPending) return <Loading />;
+  if ((me.error as any)?.status === 401)
+    return <LoginPage onDone={() => me.refetch()} />;
   if (!me.data || !selected)
     return (
       <div className="hf-app hf-center">

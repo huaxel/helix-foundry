@@ -22,8 +22,14 @@ export async function api<T = any>(
           ? body
           : JSON.stringify(body),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Request failed");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(data.error || "Request failed") as Error & {
+      status?: number;
+    };
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 export const number = (n: number | undefined) =>
