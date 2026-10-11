@@ -1128,39 +1128,49 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         const merged: typeof text = { summary: "", entities: [], links: [] };
         const fullEntities = context.ontology!.entities,
           fullLinks = context.ontology!.links;
-        for (let i = 0; i < gapEntities.length; i += 40) {
+        // Small batches: local models lose schema adherence over long outputs
+        // (nulls/omissions), and tolerant schemas degrade to partial text
+        // instead of failing the whole run.
+        for (let i = 0; i < gapEntities.length; i += 10) {
           const first = i === 0;
           // Scope the ambient ask() context per batch (first carries summary
           // context; later batches only their slice). Stages are per-batch so
           // resumed runs replay each batch instead of repeating the first.
           (context.ontology as any).entities = first
-            ? [...gapEntities.slice(i, i + 40), ...cataloguedContext]
-            : gapEntities.slice(i, i + 40);
+            ? [...gapEntities.slice(i, i + 10), ...cataloguedContext]
+            : gapEntities.slice(i, i + 10);
           (context.ontology as any).links = first ? gapLinks : [];
-          const chunk = await ask(
-            `describe_ontology_${i / 40}`,
+          let chunk: any = null;
+          try {
+            chunk = await ask(
+              `describe_ontology_${i / 10}`,
             first
               ? z.object({
-                  summary: z.string(),
-                  entities: z.array(
-                    z.object({ id: z.string(), description: z.string() }),
-                  ),
-                  links: z.array(
-                    z.object({ id: z.string(), name: z.string() }),
-                  ),
+                  summary: z.string().default(""),
+                  entities: z
+                    .array(z.object({ id: z.string(), description: z.string() }))
+                    .default([]),
+                  links: z
+                    .array(z.object({ id: z.string(), name: z.string() }))
+                    .default([]),
                 })
               : z.object({
-                  entities: z.array(
-                    z.object({ id: z.string(), description: z.string() }),
-                  ),
+                  entities: z
+                    .array(z.object({ id: z.string(), description: z.string() }))
+                    .default([]),
                 }),
             prompt,
-          );
+            );
+          } catch (error) {
+            // A failed batch only skips its slice; the rest still describe.
+            console.warn(`[assistant] describe batch ${i / 10} skipped:`, error instanceof Error ? error.message : error);
+          }
+          if (!chunk) continue;
           if (first) {
-            merged.summary = (chunk as any).summary;
+            merged.summary = (chunk as any).summary || "";
             merged.links = (chunk as any).links || [];
           }
-          merged.entities.push(...(chunk as any).entities);
+          merged.entities.push(...((chunk as any).entities || []));
         }
         (context.ontology as any).entities = fullEntities;
         (context.ontology as any).links = fullLinks;
@@ -1213,17 +1223,21 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
       // small sets are hand-renamed). Proposals are stored, never applied —
       // confirmation carries the user's names. Confident proposals only; gaps
       // stay slugs for a human.
-      const slugs = s.entities.filter((e) => (e.namedBy || "slug") === "slug");
+      // Only definition-grounded slugs are proposed (no signal → no guessing;
+      // humans name the rest). Small batches for weak local models, stored
+      // progressively so early batches survive later failures.
+      const slugs = s.entities.filter(
+        (e) => (e.namedBy || "slug") === "slug" && catalogDefs.has(e.id),
+      );
       if (slugs.length > 50 && applied) {
         const preEntities = context.ontology!.entities,
           preLinks = context.ontology!.links;
         const byId = new Map<string, any>(
           (preEntities as any[]).map((e) => [e.id, e]),
         );
-        const proposals: Record<string, string> = {};
         const slugIds = new Set(slugs.map((e) => e.id));
-        for (let i = 0; i < slugs.length; i += 40) {
-          const slice = slugs.slice(i, i + 40).map((e) => {
+        for (let i = 0; i < slugs.length; i += 10) {
+          const slice = slugs.slice(i, i + 10).map((e) => {
             const full = byId.get(e.id) || {};
             return {
               id: e.id,
@@ -1237,42 +1251,46 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
           (context.ontology as any).links = [];
           try {
             const res = await ask(
-              `propose_names_${i / 40}`,
+              `propose_names_${i / 10}`,
               z.object({
-                names: z.array(
-                  z.object({ id: z.string(), name: z.string() }),
-                ),
+                names: z
+                  .array(z.object({ id: z.string(), name: z.string() }))
+                  .default([]),
               }),
               "Propose concise business names (Title Case, at most 40 characters) for database tables from their slug, definition, properties and source tables. Expand an abbreviation only when certain. If meaning is unclear, omit the id (no proposal is better than a wrong name). Return one entry per id proposed.",
             );
+            const batch: Record<string, string> = {};
             const got = (res as any).names;
             if (Array.isArray(got))
               for (const n of got) {
                 if (!n || typeof n.id !== "string" || !slugIds.has(n.id)) continue;
                 const clean = clip(String(n.name || ""), 60).replace(/[.:;,]+$/, "");
-                if (clean) proposals[n.id] = clean;
+                if (clean) batch[n.id] = clean;
               }
-          } catch (e) {
-            console.log("DEBUG ask threw:", e instanceof Error ? e.message.slice(0, 150) : String(e).slice(0, 150));
+            if (Object.keys(batch).length)
+              await transaction(store, scope, async (tx) => {
+                const w = (await tx.get("workspace"))!,
+                  m = w.data.onboarding || {},
+                  current = m.ontologySuggestion;
+                if (current?.signature !== s.signature || current.hash !== s.hash)
+                  return;
+                tx.update(w, {
+                  ...w.data,
+                  onboarding: {
+                    ...m,
+                    ontologySuggestion: {
+                      ...current,
+                      nameProposals: { ...(current.nameProposals || {}), ...batch },
+                    },
+                  },
+                });
+              });
+          } catch {
+            // A failed batch only skips its proposals; the rest stand.
           }
         }
         (context.ontology as any).entities = preEntities;
         (context.ontology as any).links = preLinks;
-        if (Object.keys(proposals).length)
-          await transaction(store, scope, async (tx) => {
-            const w = (await tx.get("workspace"))!,
-              m = w.data.onboarding || {},
-              current = m.ontologySuggestion;
-            if (current?.signature !== s.signature || current.hash !== s.hash)
-              return;
-            tx.update(w, {
-              ...w.data,
-              onboarding: {
-                ...m,
-                ontologySuggestion: { ...current, nameProposals: proposals },
-              },
-            });
-          });
       }
       await event(
         store,

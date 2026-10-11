@@ -58,6 +58,15 @@ async function setup(count: number) {
     tx.put(
       resource(scope, "dataset", "T2", { description: "", activeVersion: "v1", profile }, "d2"),
     );
+    // One catalog entry grounds every fixture entity (shared anchor table).
+    tx.put(
+      resource(scope, "catalog", "Test catalog", {
+        version: 1,
+        tables: [{ table: "T1", definition: "Test records." }],
+        joins: [],
+        domains: [],
+      }, "catalog"),
+    );
     tx.put(
       resource(scope, "provider", "AI", {
         settings: { provider: "local", model: "test-model" },
@@ -132,15 +141,12 @@ function mockGenerate() {
   );
 }
 
-// Large-set batching is verified in production (v5: 356 slugs → batched
-// proposals); the fixture interaction that stalls its unit version is TODO.
-// eslint-disable-next-line vitest/no-disabled-tests
-it.skip("proposes bulk names for large slug sets in batches", async () => {
+it("proposes bulk names for large grounded slug sets in batches", async () => {
   await setup(55);
   const ai = mockGenerate();
   await buildWorkspace(store, scope, "run-describe");
-  // Describe gaps (40 + 15) plus proposals (40 + 15).
-  expect(ai).toHaveBeenCalledTimes(4);
+  // Fully catalogued: no describe calls; proposals in batches of 10 (6 calls).
+  expect(ai).toHaveBeenCalledTimes(6);
   const stored = (await store.get(scope, "workspace"))?.data.onboarding
     .ontologySuggestion;
   expect(stored.described).toBe(true);
@@ -153,7 +159,8 @@ it("skips proposals for small suggestions", async () => {
   await setup(10);
   const ai = mockGenerate();
   await buildWorkspace(store, scope, "run-describe");
-  expect(ai).toHaveBeenCalledTimes(1);
+  // Fully catalogued and small: neither describe nor proposals call the model.
+  expect(ai).toHaveBeenCalledTimes(0);
   const stored = (await store.get(scope, "workspace"))?.data.onboarding
     .ontologySuggestion;
   expect(stored.described).toBe(true);
