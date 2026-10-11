@@ -968,6 +968,12 @@ export async function suggestOntology(
   // Skipping also avoids pathological multi-hop scans over giant tables.
   if (refs.length) await throughAnchor(store, scope, links, entities);
 
+  // Curated links arrive after statistical degree was tallied: recount from
+  // the final link set so the unlinked-data notes below only flag entities
+  // with no links at all.
+  for (const d of drafts)
+    d.degree = links.filter((l) => l.from === d.id || l.to === d.id).length;
+
   const notes: SuggestedOntology["notes"] = [];
   const info = (id: string) => infos.find((x) => x.d.id === id)!;
   // Other 1:1 matches inside an entity, struct fields included, confirm the merge;

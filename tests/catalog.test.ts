@@ -236,3 +236,31 @@ it("imports, fetches and replaces a general catalog", async () => {
     expect(r.json()).toBeNull();
   }
 });
+
+it("flags only truly isolated entities as unlinked", async () => {
+  const s = await suggestWithCatalog(true);
+  const unlinked = (s.notes || [])
+    .filter((n: any) => n.kind === "unlinked" && n.text.includes("isn't linked"))
+    .map((n: any) => n.text);
+  const linked = new Set<string>();
+  for (const l of s.links) {
+    linked.add(l.from);
+    linked.add(l.to);
+  }
+  const byId = new Map(s.entities.map((e: any) => [e.id, e.name]));
+  // The curated ORD->CUST join links both ends: neither may be flagged.
+  expect(s.links.length).toBeGreaterThan(0);
+  for (const id of linked) {
+    const name = byId.get(id);
+    expect(
+      unlinked.some((t: string) => t.startsWith(name)),
+      `${name} is linked but flagged unlinked`,
+    ).toBe(false);
+  }
+  // Every flag must name an entity with no links at all.
+  for (const t of unlinked) {
+    const ent = s.entities.find((e: any) => t.startsWith(e.name));
+    expect(ent, t).toBeTruthy();
+    expect(linked.has(ent!.id), `${ent!.name} is linked but flagged`).toBe(false);
+  }
+});
