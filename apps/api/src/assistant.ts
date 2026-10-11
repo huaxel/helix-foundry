@@ -1966,6 +1966,24 @@ export async function publishProposal(
     assets.push(resource(scope, "dashboard", d.name, { ...d, generation }));
   for (const a of bundle.actions)
     assets.push(resource(scope, "actionType", a.name, { ...a, generation }));
+  // HelixDB cannot plan a single commit with hundreds of mutations, so stage
+  // the assets in bounded chunks first. Every asset has a stable id, so a
+  // retry overwrites rather than duplicates, and activation stays in the
+  // final transaction below (which still guards on input versions).
+  for (const c of bundle.catalog) {
+    const ds = await store.get(scope, c.datasetId);
+    if (ds && !ds.data.manualDescription)
+      assets.push({
+        ...ds,
+        description: c.description,
+        revision: ds.revision + 1,
+        data: { ...ds.data, tags: c.tags },
+      });
+  }
+  for (let i = 0; i < assets.length; i += 100)
+    await transaction(store, scope, async (tx) => {
+      for (const asset of assets.slice(i, i + 100)) tx.put(asset);
+    });
   return transaction(store, scope, async (tx) => {
     const p = await tx.get(id);
     assert(
@@ -1993,17 +2011,6 @@ export async function publishProposal(
       "Publish permission changed",
       403,
     );
-    for (const asset of assets) tx.put(asset);
-    for (const c of bundle.catalog) {
-      const ds = await tx.get(c.datasetId);
-      if (ds && !ds.data.manualDescription)
-        tx.put({
-          ...ds,
-          description: c.description,
-          revision: ds.revision + 1,
-          data: { ...ds.data, tags: c.tags },
-        });
-    }
     tx.update(workspace, {
       ...workspace.data,
       activeGeneration: generation,
