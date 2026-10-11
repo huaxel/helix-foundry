@@ -388,8 +388,17 @@ export async function suggestOntology(
     if (a && b && keyType(a.type) && keyType(b.type))
       declaredPairs.add(column(from, a).i + ":" + column(to, b).i);
   }
-  const rows =
-    cols.length > 1 ? await overlap(store, scope, cols, declaredPairs) : [];
+  // Value matching is best-effort at scale: if the overlap query times out
+  // (hundreds of tables), the suggestion still completes with schema/name
+  // links rather than failing the whole request.
+  let rows: Awaited<ReturnType<typeof overlap>> = [];
+  if (cols.length > 1) {
+    try {
+      rows = await overlap(store, scope, cols, declaredPairs);
+    } catch (error) {
+      console.warn(`[discovery] value overlap skipped (${cols.length} columns):`, error instanceof Error ? error.message : error);
+    }
+  }
 
   let edges: Edge[] = [];
   for (const r of rows) {
@@ -1135,12 +1144,16 @@ async function overlap(
   cols: Col[],
   declared: Set<string>,
 ) {
+  // Per-column cap so one giant table (tens of millions of rows) cannot make
+  // the single overlap query run forever; LIMIT short-circuits the scan once
+  // N values are found. Dense categorical keys (country, status, type codes)
+  // still overlap; rare IDs may be missed at very large scale (acceptable).
   const values = cols
     .map((c) => {
       const e = c.field
         ? `struct_extract(${q(c.column)}, ${lit(c.field)})`
         : q(c.column);
-      return `SELECT ${c.i} AS c, ${c.ds.index} AS d, ${c.integer ? 1 : 0} AS i, ${lit(stem(c).slice(0, 3))} AS s, CAST(${e} AS VARCHAR) AS v FROM ${q(datasetTable(c.ds.d.id))} WHERE ${e} IS NOT NULL`;
+      return `(SELECT ${c.i} AS c, ${c.ds.index} AS d, ${c.integer ? 1 : 0} AS i, ${lit(stem(c).slice(0, 3))} AS s, CAST(${e} AS VARCHAR) AS v FROM ${q(datasetTable(c.ds.d.id))} WHERE ${e} IS NOT NULL LIMIT 10000)`;
     })
     .join(" UNION ALL ");
   const pairs = [...declared].map((p) => p.split(":").map(Number));
