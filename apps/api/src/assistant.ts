@@ -1686,6 +1686,13 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
       await event(store, scope, id, "publishing", "Publishing your workspace", {
         proposalId: proposal.id,
       });
+      // Per-page full-table materialization makes row staging O(table) per
+      // page: beyond this bound onboarding publishes dashboard-only and the
+      // workspace queries live data instead of staged copies.
+      const stagedRows = bundle.ontology.reduce(
+        (n, o) => n + (map.get(o.datasetId)?.data.profile.rows || 0),
+        0,
+      );
       await publishProposal(
         store,
         scope,
@@ -1693,6 +1700,7 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         proposal.data.hash,
         run.data.authority?.userId,
         "Workspace published",
+        { stageRecords: stagedRows <= 1_000_000 },
       );
       return;
     }
@@ -1730,6 +1738,7 @@ export async function publishProposal(
   hash: string,
   actor: string,
   message = "Reviewed workspace published",
+  opts: { stageRecords?: boolean } = {},
 ) {
   const proposal = await store.get(scope, id);
   assert(proposal?.kind === "proposal", "Proposal not found", 404);
@@ -1816,6 +1825,10 @@ export async function publishProposal(
       r,
     ]),
   );
+  // Row staging pages every record 500 at a time, and the executor
+  // materializes the full table per page: at scale that never finishes, so
+  // huge workspaces publish dashboard-only and query live instead.
+  const stageRecords = opts.stageRecords !== false;
   for (const type of bundle.ontology) {
     const dataset = map.get(type.datasetId);
     assert(dataset, "Dataset unavailable");
@@ -1825,6 +1838,7 @@ export async function publishProposal(
     assets.push(
       resource(scope, "objectType", type.name, { ...type, generation, typeId }),
     );
+    if (!stageRecords) continue;
     for (let offset = 0; offset < dataset.data.profile.rows; offset += 500) {
       const r = await execute({
         mode: "query",
@@ -1877,6 +1891,9 @@ export async function publishProposal(
   }
   const quote = (v: string) => '"' + v.replaceAll('"', '""') + '"';
   for (const rel of bundle.relationships) {
+    // Without staged records there are no identities to link, and the join
+    // itself would scan both tables for nothing.
+    if (!stageRecords) continue;
     const fromType = bundle.ontology.find((o) => o.name === rel.fromType)!,
       toType = bundle.ontology.find((o) => o.name === rel.toType)!;
     const sql = `SELECT a.${quote(fromType.primaryKey)} AS from_key,b.${quote(toType.primaryKey)} AS to_key FROM ${quote(datasetTable(fromType.datasetId))} a JOIN ${quote(datasetTable(toType.datasetId))} b ON a.${quote(rel.fromColumn)}=b.${quote(rel.toColumn)}`;
@@ -1937,7 +1954,12 @@ export async function publishProposal(
   }
   for (const asset of assets)
     if (asset.kind === "objectType")
-      asset.data.objectCount = identities.get(asset.name)?.size || 0;
+      asset.data.objectCount = stageRecords
+        ? identities.get(asset.name)?.size || 0
+        : map.get(
+            bundle.ontology.find((o) => o.name === asset.name)?.datasetId ||
+              "",
+          )?.data.profile.rows || 0;
   for (const d of bundle.dashboards)
     assets.push(resource(scope, "dashboard", d.name, { ...d, generation }));
   for (const a of bundle.actions)
