@@ -16,6 +16,7 @@ vi.mock("../apps/api/src/executor.js", () => ({
   },
 }));
 import { createApp } from "../apps/api/src/app.js";
+import type { OnboardingState } from "../packages/shared/src/index.js";
 import { MemoryStore, resource, transaction } from "../apps/api/src/store.js";
 import { buildWorkspace, pipelineId } from "../apps/api/src/assistant.js";
 import { onboardingState } from "../apps/api/src/onboarding-state.js";
@@ -71,6 +72,29 @@ async function samples() {
   const r = await request("POST", "/demo", { advance: true });
   expect(r.statusCode, r.body).toBe(200);
 }
+// Background suggestion: POST queues a job and returns fast; the test runs the
+// queued job the way the worker would, then reads the stored suggestion.
+async function suggestNow() {
+  const queued = await request("POST", "/onboarding/ontology", {});
+  expect(queued.statusCode, queued.body).toBe(200);
+  expect(queued.json().ontology).toBeUndefined();
+  const job = (await store.list(scope, "job")).find(
+    (j) => j.data.type === "suggest" && j.data.status === "queued",
+  )!;
+  expect(job).toBeDefined();
+  expect(queued.json().suggestJob.id).toBe(job.id);
+  const { runSuggestJob } = await import("../apps/api/src/suggest-job.js");
+  await runSuggestJob(store, scope, job);
+  await transaction(store, scope, async (tx) => {
+    const r = (await tx.get(job.id))!;
+    tx.update(r, { ...r.data, status: "succeeded" });
+  });
+  const state = await onboardingState(store, scope);
+  expect(state.ontology).toBeDefined();
+  return state as OnboardingState & {
+    ontology: NonNullable<OnboardingState["ontology"]>;
+  };
+}
 
 it("moves to Outcome before the samples load and reports their progress", async () => {
   let release!: () => void;
@@ -99,10 +123,22 @@ it("moves to Outcome before the samples load and reports their progress", async 
 
 it("suggests an ontology once per data version and lets the AI describe it", async () => {
   await samples();
-  const first = await request("POST", "/onboarding/ontology", {});
-  expect(first.statusCode, first.body).toBe(200);
-  const state = first.json();
-  expect(state.ontology.entities[0].name).toBe("Account");
+  const queuedFirst = await request("POST", "/onboarding/ontology", {});
+  expect(queuedFirst.statusCode, queuedFirst.body).toBe(200);
+  // Background: the POST queues a job and returns fast with no suggestion yet.
+  expect(queuedFirst.json().ontology).toBeUndefined();
+  expect(queuedFirst.json().suggestJob.data).toMatchObject({
+    type: "suggest",
+    status: "queued",
+  });
+  // A second POST while the run is queued does not queue another job.
+  const dupe = await request("POST", "/onboarding/ontology", {});
+  expect(dupe.json().suggestJob.id).toBe(queuedFirst.json().suggestJob.id);
+  expect(
+    (await store.list(scope, "job")).filter((j) => j.data.type === "suggest"),
+  ).toHaveLength(1);
+  const state = await suggestNow();
+  expect(state.ontology!.entities[0].name).toBe("Account");
   expect(state.ontology.described).toBe(false);
   // Without a ready provider the computed text stays and no run is queued.
   expect(state.ontologyRun).toBeUndefined();
@@ -136,8 +172,9 @@ it("suggests an ontology once per data version and lets the AI describe it", asy
     hash: state.ontology.hash,
     summary: "Accounts, their people, billing and support in one model.",
   });
+  // Members reach the model biggest-first, so systems list by rows.
   expect(described.ontology!.entities[0].description).toBe(
-    "One account per row, from planetscale and workos and stripe.",
+    "One account per row, from workos and planetscale and stripe.",
   );
   expect(
     described.ontology!.links.find((l) => l.id === "user-account_id-account")
@@ -154,8 +191,7 @@ it("suggests an ontology once per data version and lets the AI describe it", asy
 it("confirms a reviewed ontology, builds a pipeline-backed view from it and publishes it", async () => {
   // No AI is set up: confirming and building from a confirmed ontology is code.
   await samples();
-  const suggested = (await request("POST", "/onboarding/ontology", {})).json()
-    .ontology;
+  const suggested = (await suggestNow()).ontology;
   const stale = await request("POST", "/onboarding/ontology/confirm", {
     hash: "stale",
   });
@@ -285,42 +321,51 @@ it("confirms a reviewed ontology, builds a pipeline-backed view from it and publ
 
 it("recomputes the suggestion when the selected data changes", async () => {
   await samples();
-  const first = (await request("POST", "/onboarding/ontology", {})).json();
+  const first = await suggestNow();
   const events = first.datasets.find((d: any) => d.name === "PostHog · events");
   const patched = (
-    await request("PATCH", "/onboarding", { excludedIds: [events.id] })
+    await request("PATCH", "/onboarding", { excludedIds: [events!.id] })
   ).json();
   expect(patched.ontology).toBeUndefined();
   expect(
     (await store.get(scope, "workspace"))?.data.onboarding.ontologySuggestion,
   ).toBeNull();
-  const next = (await request("POST", "/onboarding/ontology", {})).json();
-  expect(next.ontology.signature).not.toBe(first.ontology.signature);
+  // A changed selection queues a fresh run (the old job already succeeded).
+  const next = await suggestNow();
+  expect(next.ontology!.signature).not.toBe(first.ontology!.signature);
   expect(next.ontology.entities.map((e: any) => e.name)).not.toContain("Event");
 });
 
 it("describes a restored suggestion again and keeps it across a reordered selection", async () => {
   await provider();
   await samples();
-  const queued = (await request("POST", "/onboarding/ontology", {})).json();
+  const queued = await suggestNow();
+  // The fresh suggestion queues its descriptions on the next POST.
+  const describedQueued = (
+    await request("POST", "/onboarding/ontology", {})
+  ).json();
+  expect(describedQueued.ontologyRun.data.status).toBe("queued");
   vi.spyOn(Provider.prototype, "generate").mockImplementation(
     async (system, context) => ({
       value: referenceReply(system, context),
       tokens: 12,
     }),
   );
-  await buildWorkspace(store, scope, queued.ontologyRun.id);
+  await buildWorkspace(store, scope, describedQueued.ontologyRun.id);
   const events = queued.datasets.find(
     (d: any) => d.name === "PostHog · events",
   );
   const campaigns = queued.datasets.find(
     (d: any) => d.name === "S3 · marketing_campaigns.csv",
   );
-  await request("PATCH", "/onboarding", { excludedIds: [events.id] });
+  await request("PATCH", "/onboarding", { excludedIds: [events!.id] });
   await request("PATCH", "/onboarding", { excludedIds: [] });
+  // Re-including clears the stored suggestion, so a fresh background run
+  // recomputes it undescribed before its descriptions queue.
+  const recomputed = await suggestNow();
+  expect(recomputed.ontology!.described).toBe(false);
   const restored = (await request("POST", "/onboarding/ontology", {})).json();
-  expect(restored.ontology.described).toBe(false);
-  expect(restored.ontologyRun.id).not.toBe(queued.ontologyRun.id);
+  expect(restored.ontologyRun.id).not.toBe(describedQueued.ontologyRun.id);
   expect(restored.ontologyRun.data.status).toBe("queued");
   const again = (await request("POST", "/onboarding/ontology", {})).json();
   expect(again.ontologyRun.id).toBe(restored.ontologyRun.id);
@@ -328,10 +373,9 @@ it("describes a restored suggestion again and keeps it across a reordered select
   expect((await onboardingState(store, scope)).ontology?.described).toBe(true);
 
   await request("PATCH", "/onboarding", {
-    excludedIds: [events.id, campaigns.id],
+    excludedIds: [events!.id, campaigns!.id],
   });
-  const suggested = (await request("POST", "/onboarding/ontology", {})).json()
-    .ontology;
+  const suggested = (await suggestNow()).ontology;
   const review = {
     hash: suggested.hash,
     excluded: ["support_ticket"],
@@ -347,7 +391,7 @@ it("describes a restored suggestion again and keeps it across a reordered select
   // The same set in another order changes nothing.
   const reordered = (
     await request("PATCH", "/onboarding", {
-      excludedIds: [campaigns.id, events.id],
+      excludedIds: [campaigns!.id, events!.id],
     })
   ).json();
   expect(reordered.ontologyConfirmed).toBe(true);
@@ -362,8 +406,7 @@ it("builds from dashboards alone when no table has a usable key", async () => {
     name: "readings",
     rows: [1, 2, 3, 4].map(() => ({ sensor: "A", value: 1 })),
   });
-  const suggested = (await request("POST", "/onboarding/ontology", {})).json()
-    .ontology;
+  const suggested = (await suggestNow()).ontology;
   expect(suggested.entities).toEqual([]);
   const confirmed = await request("POST", "/onboarding/ontology/confirm", {
     hash: suggested.hash,
@@ -384,8 +427,7 @@ it("builds from dashboards alone when no table has a usable key", async () => {
 it("publishes a computed overview without calling the model", async () => {
   await provider();
   await samples();
-  const suggested = (await request("POST", "/onboarding/ontology", {})).json()
-    .ontology;
+  const suggested = (await suggestNow()).ontology;
   const state = (
     await request("POST", "/onboarding/ontology/confirm", {
       hash: suggested.hash,
@@ -449,8 +491,7 @@ it("publishes a computed overview without calling the model", async () => {
 
 it("queues a build left waiting for the former review page again on confirm", async () => {
   await samples();
-  const suggested = (await request("POST", "/onboarding/ontology", {})).json()
-    .ontology;
+  const suggested = (await suggestNow()).ontology;
   const state = (
     await request("POST", "/onboarding/ontology/confirm", {
       hash: suggested.hash,
@@ -478,8 +519,7 @@ it("queues a build left waiting for the former review page again on confirm", as
 it("finishes publishing once started and refuses Stop meanwhile", async () => {
   await provider();
   await samples();
-  const suggested = (await request("POST", "/onboarding/ontology", {})).json()
-    .ontology;
+  const suggested = (await suggestNow()).ontology;
   const state = (
     await request("POST", "/onboarding/ontology/confirm", {
       hash: suggested.hash,
@@ -505,8 +545,7 @@ it("finishes publishing once started and refuses Stop meanwhile", async () => {
 
 it("restarts a failed build on Retry or on confirming again, as the acting owner", async () => {
   await samples();
-  const suggested = (await request("POST", "/onboarding/ontology", {})).json()
-    .ontology;
+  const suggested = (await suggestNow()).ontology;
   const confirm = () =>
     request("POST", "/onboarding/ontology/confirm", { hash: suggested.hash });
   const id = (await confirm()).json().buildRun.id;
@@ -555,8 +594,11 @@ it("restarts a failed build on Retry or on confirming again, as the acting owner
 it("reports a malformed AI reply in plain words", async () => {
   await provider();
   await samples();
+  await suggestNow();
+  // The stored suggestion queues its description run on the next POST.
   const run = (await request("POST", "/onboarding/ontology", {})).json()
     .ontologyRun;
+  expect(run.data.status).toBe("queued");
   vi.spyOn(Provider.prototype, "generate").mockResolvedValue({
     value: { summary: 1 },
     tokens: 12,
@@ -588,8 +630,7 @@ it("loads each sample once when a second /demo arrives mid-load", async () => {
 
 it("serves the published records as a graph, whole or around one record", async () => {
   await samples();
-  const suggested = (await request("POST", "/onboarding/ontology", {})).json()
-    .ontology;
+  const suggested = (await suggestNow()).ontology;
   const state = (
     await request("POST", "/onboarding/ontology/confirm", {
       hash: suggested.hash,

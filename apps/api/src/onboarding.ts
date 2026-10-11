@@ -24,7 +24,7 @@ import { config } from "./config.js";
 import { discover } from "./connectors.js";
 import { providerSettings, retried } from "./assistant.js";
 import { onboardingState, publicResource } from "./onboarding-state.js";
-import { confirmOntology, ontologyGoal, suggestOntology } from "./discovery.js";
+import { confirmOntology, ontologyGoal } from "./discovery.js";
 
 type Access = (req: any, role?: "owner" | "editor" | "viewer") => Promise<any>;
 export function registerOnboarding(
@@ -445,25 +445,48 @@ export function registerOnboarding(
     assert(state.inputsReady, state.blockers.join(" "), 409);
     const stored = (await store.get(a.scope, "workspace"))?.data.onboarding
       ?.ontologySuggestion;
-    const suggestion: SuggestedOntology =
-      stored?.signature === state.signature
-        ? stored
-        : await suggestOntology(store, a.scope, {
-            datasets: state.datasets,
-            sources: state.sources,
-            signature: state.signature,
-          });
+    // The suggestion computes in a background job so this request returns fast;
+    // the client polls until the fresh suggestion (or a failure) appears.
+    const fresh: SuggestedOntology | undefined =
+      stored?.signature === state.signature ? stored : undefined;
     await transaction(store, a.scope, async (tx) => {
       const w = (await tx.get("workspace"))!,
         m = w.data.onboarding || {};
-      const current =
-        m.ontologySuggestion?.signature === state.signature
-          ? m.ontologySuggestion
-          : suggestion;
+      const current = fresh || m.ontologySuggestion;
+      if (!fresh) {
+        for (const j of await tx.list("job"))
+          if (
+            j.data.type === "suggest" &&
+            j.data.status === "queued" &&
+            j.data.onboardingSignature !== state.signature
+          )
+            tx.update(j, { ...j.data, status: "canceled" });
+        const active = (await tx.list("job")).some(
+          (j) =>
+            j.data.type === "suggest" &&
+            j.data.onboardingSignature === state.signature &&
+            ["queued", "running"].includes(j.data.status),
+        );
+        if (!active)
+          tx.put(
+            resource(a.scope, "job", "Suggest ontology", {
+              type: "suggest",
+              status: "queued",
+              background: false,
+              onboardingSignature: state.signature,
+              datasetIds: state.datasets.map((d) => d.id),
+              sourceIds: state.sources.map((s) => s.id),
+              progress: { stage: "queued", message: "Queued suggestion" },
+            }),
+          );
+      }
       const linked = m.ontologyRunId && (await tx.get(m.ontologyRunId));
+      // Descriptions only queue for a fresh stored suggestion; a pending
+      // background run gets described when the client re-posts after it lands.
       const describe =
+        !!fresh &&
         state.providerReady &&
-        !current.described &&
+        !fresh.described &&
         linked?.data.onboardingSignature !== state.signature;
       // A finished run described an earlier copy of this suggestion (the data was
       // deselected and restored since), so the next attempt gets its own run.
@@ -493,19 +516,17 @@ export function registerOnboarding(
               task: "describe_ontology",
               datasetIds: state.datasets.map((d) => d.id),
               onboardingSignature: state.signature,
-              ontologyHash: current.hash,
+              ontologyHash: fresh!.hash,
             },
             runId,
           ),
         );
-      if (current !== m.ontologySuggestion || describe)
+      // The background job stores the suggestion when it lands; this request
+      // only records a newly queued description run.
+      if (describe)
         tx.update(w, {
           ...w.data,
-          onboarding: {
-            ...m,
-            ontologySuggestion: current,
-            ...(describe ? { ontologyRunId: runId } : {}),
-          },
+          onboarding: { ...m, ontologyRunId: runId },
         });
     });
     return onboardingState(store, a.scope);

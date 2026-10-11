@@ -87,6 +87,19 @@ export function OntologyStep({
       ? state.ontologyRun
       : undefined;
   const describing = !!ontology && !ontology.described && working(run);
+  // Background suggestion: the POST queues a job and returns fast; the client
+  // polls until the fresh suggestion lands (or the job fails).
+  const suggestJob =
+    !ontology && state.suggestJob?.data.onboardingSignature === signature
+      ? state.suggestJob
+      : undefined;
+  const suggesting = !!suggestJob && working(suggestJob);
+  const jobStage = suggesting
+    ? (suggestJob.data.progress as { stage?: string } | undefined)?.stage
+    : undefined;
+  const jobMessage = suggesting
+    ? (suggestJob.data.progress as { message?: string } | undefined)?.message
+    : undefined;
   // Returning to this step, or reloading it, shows an existing suggestion at once.
   const [revealed, setRevealed] = useState(() => !!ontology);
   const [arrived, setArrived] = useState(false);
@@ -113,8 +126,9 @@ export function OntologyStep({
     !!ontology && state.providerReady && !ontology.described && !run;
   useEffect(() => {
     if (!readReady || suggestError || (ontology && !wantsDescription)) return;
-    // Asked again once AI is ready, so the suggestion gets its descriptions.
-    const key = `${signature}:${state.providerReady}`;
+    // Asked again once AI is ready (so the suggestion gets its descriptions)
+    // and once a fresh suggestion lands (to queue its descriptions).
+    const key = `${signature}:${state.providerReady}:${!!ontology}`;
     if (requested.current === key) return;
     requested.current = key;
     api<OnboardingState>(`/workspaces/${id}/onboarding/ontology`, {})
@@ -136,6 +150,28 @@ export function OntologyStep({
     state.providerReady,
     suggestError,
   ]);
+
+  // A failed background run surfaces its error with Retry; a re-post then
+  // queues a fresh run (the failed job is ignored once inactive).
+  useEffect(() => {
+    if (ontology || !suggestJob || working(suggestJob)) return;
+    if (suggestJob.data.status === "failed") {
+      requested.current = "";
+      setSuggestError(
+        (suggestJob.data.error as string | undefined) ||
+          "The suggestion failed. Retry to run it again.",
+      );
+    }
+  }, [ontology, suggestJob]);
+
+  // Poll while the suggestion or its descriptions compute in the background.
+  useEffect(() => {
+    if (showing || (!suggesting && !describing)) return;
+    const timer = setInterval(() => {
+      void qc.invalidateQueries({ queryKey: [id, "onboarding"] });
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [showing, suggesting, describing, id, qc]);
 
   // A load that stops advancing (e.g. the server restarted mid-way) resumes;
   // /demo is idempotent, but a second request racing a live one doubles the work.
@@ -278,11 +314,28 @@ export function OntologyStep({
     label,
     status: past(to) ? "done" : past(from) ? "active" : "pending",
   });
+  // While the background job runs, steps reflect its real reported stage
+  // (not the fixed timers, which assume a sub-second local run).
+  const order = ["queued", "reading", "keys", "matching", "proposing"];
+  const at = jobStage ? order.indexOf(jobStage) : -1;
+  const jobStep = (label: string, i: number): FeedStep => ({
+    label,
+    status: at < 0 ? "pending" : at > i ? "done" : at === i ? "active" : "pending",
+  });
   const steps: FeedStep[] = [
-    step(read, m.start, readAt),
-    step("Finding keys", readAt, keysAt),
-    step("Matching records across sources", keysAt, matchAt),
-    step("Proposing entities", matchAt, proposeAt),
+    ...(suggesting && at >= 0
+      ? [
+          jobStep(jobMessage || read, 1),
+          jobStep("Finding keys", 2),
+          jobStep("Matching records across sources", 3),
+          jobStep("Proposing entities", 4),
+        ]
+      : [
+          step(read, m.start, readAt),
+          step("Finding keys", readAt, keysAt),
+          step("Matching records across sources", keysAt, matchAt),
+          step("Proposing entities", matchAt, proposeAt),
+        ]),
     ...(state.providerReady || run
       ? [
           {

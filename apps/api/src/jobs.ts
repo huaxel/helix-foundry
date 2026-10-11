@@ -10,6 +10,7 @@ import { transaction, resource, type Store } from "./store.js";
 import { buildWorkspace, providerSettings, enqueue } from "./assistant.js";
 import { assert } from "./security.js";
 import { runSyncJob, runUploadJob, syncLocalSources } from "./data-jobs.js";
+import { runSuggestJob } from "./suggest-job.js";
 import { runPipelineJob } from "./pipeline-jobs.js";
 // Queue, leases and retries live here; each job type's work lives with its area.
 const jobHandlers: Record<
@@ -20,6 +21,7 @@ const jobHandlers: Record<
   upload: runUploadJob,
   sync: runSyncJob,
   pipeline: runPipelineJob,
+  suggest: runSuggestJob,
 };
 export function startWorker(store: Store) {
   const stopStreams = startChangeStreams(store);

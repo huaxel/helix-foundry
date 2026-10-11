@@ -114,6 +114,12 @@ export async function onboardingState(
         .sort(),
     }),
   );
+  const suggestJob = allJobs
+    .filter(
+      (j) => j.data.type === "suggest" && j.data.onboardingSignature === signature,
+    )
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .at(-1);
   const [providerJob, recommendationRun, buildRun, ontologyRun] =
     await Promise.all([
       m.providerJobId && store.get(scope, m.providerJobId),
@@ -194,6 +200,7 @@ export async function onboardingState(
         ? m.ontologySuggestion
         : undefined,
     ontologyRun: ontologyRun || undefined,
+    suggestJob: suggestJob ? publicResource(suggestJob) : undefined,
     ontologyConfirmed: m.ontology?.signature === signature,
     ontologyEdits:
       m.ontology?.signature === signature &&

@@ -305,11 +305,18 @@ function structFields(type: string) {
   });
 }
 
+export type SuggestStage = "reading" | "keys" | "matching" | "proposing";
 export async function suggestOntology(
   store: Store,
   scope: string,
-  input: { datasets: Resource[]; sources: Resource[]; signature: string },
+  input: {
+    datasets: Resource[];
+    sources: Resource[];
+    signature: string;
+    onProgress?: (stage: SuggestStage) => void;
+  },
 ): Promise<SuggestedOntology> {
+  const progress = input.onProgress || (() => {});
   const sources = new Map(input.sources.map((s) => [s.id, s]));
   const infos: Info[] = input.datasets
     .filter((d) => d.data.activeVersion && d.data.profile?.columns)
@@ -344,7 +351,9 @@ export async function suggestOntology(
       )
         x.alt.add(c.name);
   }
+  progress("reading");
   const declared = declaredKeys(infos, sources);
+  progress("keys");
   const cols: Col[] = [];
   const column = (x: Info, c: ColumnProfile, field?: string) => {
     const name = field ? c.name + "." + field : c.name;
@@ -391,6 +400,7 @@ export async function suggestOntology(
   // Value matching is best-effort at scale: if the overlap query times out
   // (hundreds of tables), the suggestion still completes with schema/name
   // links rather than failing the whole request.
+  progress("matching");
   let rows: Awaited<ReturnType<typeof overlap>> = [];
   if (cols.length > 1) {
     try {
@@ -779,6 +789,7 @@ export async function suggestOntology(
     d.name = name;
     d.id = id;
   }
+  progress("proposing");
   const byDataset = new Map(infos.map((x) => [x.d.id, x.d]));
   const plain = (d: Draft) => lowerFirst(d.name);
   const entities: SuggestedEntity[] = drafts.map((d) => {

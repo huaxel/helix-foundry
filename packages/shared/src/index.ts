@@ -377,6 +377,8 @@ export const OnboardingStateSchema = z.object({
   // Suggested ontology for the current data, and its AI description run.
   ontology: SuggestedOntologySchema.optional(),
   ontologyRun: ResourceSchema.optional(),
+  // Background suggestion job for the current signature (queued/running/failed).
+  suggestJob: ResourceSchema.optional(),
   ontologyConfirmed: z.boolean(),
   // The review edits confirmed for the current suggestion, to restore them.
   ontologyEdits: OntologyEditsSchema.optional(),
