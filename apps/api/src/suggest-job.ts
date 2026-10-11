@@ -2,7 +2,7 @@ import type { Resource } from "../../../packages/shared/src/index.js";
 import { suggestOntology } from "./discovery.js";
 import { onboardingState } from "./onboarding-state.js";
 import { jobProgress } from "./setup-jobs.js";
-import { transaction, type Store } from "./store.js";
+import { resource, transaction, type Store } from "./store.js";
 
 // Background suggestion job: computes the ontology without blocking the setup
 // POST, reporting real stages (reading/keys/matching/proposing) for the progress
@@ -77,5 +77,29 @@ export async function runSuggestJob(
       },
     });
   });
+  // Chain link validation for curated suggestions (advisory, background).
+  const curatedCount = ((suggestion as any).links as any[]).filter((l) =>
+    String(l.id || "").startsWith("catalog-"),
+  ).length;
+  if (curatedCount) {
+    await transaction(store, scope, async (tx) => {
+      const active = (await tx.list("job")).some(
+        (j) =>
+          j.data.type === "validate" &&
+          j.data.onboardingSignature === onboardingSignature &&
+          ["queued", "running"].includes(j.data.status),
+      );
+      if (!active)
+        tx.put(
+          resource(scope, "job", "Validate catalog links", {
+            type: "validate",
+            status: "queued",
+            background: true,
+            onboardingSignature,
+            progress: { stage: "queued", message: "Queued validation" },
+          }),
+        );
+    });
+  }
   return suggestion;
 }
