@@ -1144,16 +1144,19 @@ async function overlap(
   cols: Col[],
   declared: Set<string>,
 ) {
-  // Per-column cap so one giant table (tens of millions of rows) cannot make
-  // the single overlap query run forever; LIMIT short-circuits the scan once
-  // N values are found. Dense categorical keys (country, status, type codes)
-  // still overlap; rare IDs may be missed at very large scale (acceptable).
+  // Adaptive value budget: total work stays ~constant no matter how many tables
+  // connect (2M values across all key columns; at test scale the cap never bites).
+  // LIMIT short-circuits each scan once its share is found. Dense categorical keys
+  // (country, status, type codes) repeat inside any slice and still overlap; rare
+  // IDs may be missed at very large scale (acceptable: same-system ID joins are
+  // already captured by schema and declared keys).
+  const perCol = Math.max(500, Math.floor(2_000_000 / cols.length));
   const values = cols
     .map((c) => {
       const e = c.field
         ? `struct_extract(${q(c.column)}, ${lit(c.field)})`
         : q(c.column);
-      return `(SELECT ${c.i} AS c, ${c.ds.index} AS d, ${c.integer ? 1 : 0} AS i, ${lit(stem(c).slice(0, 3))} AS s, CAST(${e} AS VARCHAR) AS v FROM ${q(datasetTable(c.ds.d.id))} WHERE ${e} IS NOT NULL LIMIT 10000)`;
+      return `(SELECT ${c.i} AS c, ${c.ds.index} AS d, ${c.integer ? 1 : 0} AS i, ${lit(stem(c).slice(0, 3))} AS s, CAST(${e} AS VARCHAR) AS v FROM ${q(datasetTable(c.ds.d.id))} WHERE ${e} IS NOT NULL LIMIT ${perCol})`;
     })
     .join(" UNION ALL ");
   const pairs = [...declared].map((p) => p.split(":").map(Number));

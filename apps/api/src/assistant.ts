@@ -1029,14 +1029,22 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
           kind: e.kind,
           records: e.rows,
           key: e.key,
-          sources: e.members.map((m) => ({
-            dataset: m.datasetName,
-            system: m.source,
-            rows: m.rows,
-            matched: m.matched,
-            description: described.get(m.datasetId) || undefined,
-          })),
-          properties: e.properties.slice(0, 24),
+          // Slim context for speed: the model writes one sentence per entity, so it
+          // gets the shape (top members by rows, first properties), not every member
+          // description. Full coverage is preserved (all entities still described).
+          sources: [...e.members]
+            .sort((a, b) => (b.rows || 0) - (a.rows || 0))
+            .slice(0, 6)
+            .map((m) => ({
+              dataset: m.datasetName,
+              system: m.source,
+              rows: m.rows,
+              matched: m.matched,
+            })),
+          ...(e.members.length > 6
+            ? { memberCount: e.members.length }
+            : {}),
+          properties: e.properties.slice(0, 8),
         })),
         links: s.links.map((l) => ({
           id: l.id,
