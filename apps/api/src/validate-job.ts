@@ -34,48 +34,65 @@ export async function runValidateJob(
       `SELECT ${i} AS k FROM (SELECT CAST(${q(l.fromColumn)} AS VARCHAR) AS v FROM ${q(datasetTable(l.fromDatasetId))} USING SAMPLE ${SAMPLE_ROWS} ROWS WHERE ${q(l.fromColumn)} IS NOT NULL) a JOIN (SELECT CAST(${q(l.toColumn)} AS VARCHAR) AS v FROM ${q(datasetTable(l.toDatasetId))} USING SAMPLE ${SAMPLE_ROWS} ROWS WHERE ${q(l.toColumn)} IS NOT NULL) b ON a.v = b.v LIMIT 1`,
   );
   const ids = [...new Set(curated.flatMap((l) => [l.fromDatasetId, l.toDatasetId]))];
-  const seen = new Set<number>();
+  const entitiesById = new Map(
+    (((suggestion as any).entities as any[]) || []).map((e: any) => [e.id, e.name]),
+  );
+  const noteFor = (l: any) =>
+    `${entitiesById.get(l.from) || l.from} → ${entitiesById.get(l.to) || l.to} (catalog) shows no matching rows in a 20,000-row sample; the catalog key may be stale or very sparse.`;
+  let suspect = 0;
   for (let start = 0; start < branches.length; start += BATCH) {
     const slice = branches.slice(start, start + BATCH);
     const r = await queryDatasets(store, scope, ids, slice.join(" UNION ALL "), {
       limit: 1000,
     });
-    for (const row of r.rows as any[]) seen.add(start + Number(row.k));
-    void jobProgress(store, scope, job.id, {
-      stage: "validating",
-      message: `Checking catalog links ${Math.min(start + BATCH, branches.length)} of ${branches.length}`,
-      at: Date.now(),
-    }).catch(() => {});
+    const seen = new Set((r.rows as any[]).map((row) => start + Number(row.k)));
+    // Progressive persistence: each batch's findings survive even if a later
+    // batch fails or the job is killed.
+    await transaction(store, scope, async (tx) => {
+      const current = await tx.get(job.id);
+      if (!current || current.data.status === "canceled") return;
+      const w = (await tx.get("workspace"))!;
+      const currentSuggestion = w.data?.onboarding?.ontologySuggestion;
+      if (
+        !currentSuggestion ||
+        currentSuggestion.hash !== (suggestion as any).hash
+      )
+        return;
+      const have = new Set(
+        ((currentSuggestion.notes as any[]) || []).map((n) => n.text),
+      );
+      const notes = [...((currentSuggestion.notes as any[]) || [])];
+      slice.forEach((_, k) => {
+        const i = start + k;
+        if (seen.has(i)) return;
+        const text = noteFor(curated[i]);
+        if (have.has(text)) return;
+        have.add(text);
+        notes.push({
+          kind: "unmatched",
+          text,
+          entities: [curated[i].from, curated[i].to],
+          links: [curated[i].id],
+        });
+        suspect++;
+      });
+      tx.update(w, {
+        ...w.data,
+        onboarding: {
+          ...(w.data.onboarding || {}),
+          ontologySuggestion: { ...currentSuggestion, notes },
+        },
+      });
+      if (current.data.status !== "canceled")
+        tx.update(current, {
+          ...current.data,
+          progress: {
+            stage: "validating",
+            message: `Checking catalog links ${Math.min(start + BATCH, branches.length)} of ${branches.length}`,
+            at: Date.now(),
+          },
+        });
+    });
   }
-  const existingNotes = new Set(
-    ((suggestion.notes as any[]) || []).map((n) => n.text),
-  );
-  const notes = [...((suggestion.notes as any[]) || [])];
-  const entitiesById = new Map(
-    ((suggestion.entities as any[]) || []).map((e: any) => [e.id, e.name]),
-  );
-  curated.forEach((l, i) => {
-    if (seen.has(i)) return;
-    const text = `${entitiesById.get(l.from) || l.from} → ${entitiesById.get(l.to) || l.to} (catalog) shows no matching rows in a 20,000-row sample; the catalog key may be stale or very sparse.`;
-    if (existingNotes.has(text)) return;
-    notes.push({
-      kind: "unmatched",
-      text,
-      entities: [l.from, l.to],
-      links: [l.id],
-    });
-  });
-  await transaction(store, scope, async (tx) => {
-    const current = await tx.get(job.id);
-    if (!current || current.data.status === "canceled") return;
-    const w = (await tx.get("workspace"))!;
-    const currentSuggestion = w.data?.onboarding?.ontologySuggestion;
-    if (!currentSuggestion || currentSuggestion.hash !== (suggestion as any).hash)
-      return;
-    tx.update(w, {
-      ...w.data,
-      onboarding: { ...(w.data.onboarding || {}), ontologySuggestion: { ...currentSuggestion, notes } },
-    });
-  });
-  return { checked: curated.length, suspect: curated.length - seen.size };
+  return { checked: curated.length, suspect };
 }
