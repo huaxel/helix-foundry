@@ -37,8 +37,9 @@ export async function runValidateJob(
   const entitiesById = new Map(
     (((suggestion as any).entities as any[]) || []).map((e: any) => [e.id, e.name]),
   );
+  // Columns included so distinct pairs between the same entities flag separately.
   const noteFor = (l: any) =>
-    `${entitiesById.get(l.from) || l.from} → ${entitiesById.get(l.to) || l.to} (catalog) shows no matching rows in a 20,000-row sample; the catalog key may be stale or very sparse.`;
+    `${entitiesById.get(l.from) || l.from}.${l.fromColumn} → ${entitiesById.get(l.to) || l.to}.${l.toColumn} (catalog) shows no matching rows in a 20,000-row sample; the catalog key may be stale or very sparse.`;
   let suspect = 0;
   for (let start = 0; start < branches.length; start += BATCH) {
     const slice = branches.slice(start, start + BATCH);

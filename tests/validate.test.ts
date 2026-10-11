@@ -102,6 +102,8 @@ it("batches large link sets and offsets per-batch indexes", async () => {
     const links = Array.from({ length: 25 }, (_, i) => ({
       ...base.links[0],
       id: `catalog-link-${i}`,
+      fromColumn: `X${i}`,
+      toColumn: `Y${i}`,
     }));
     tx.update(w, {
       ...w.data,
