@@ -620,12 +620,12 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
       ? focusDatasets(
           datasets,
           run.data.goal,
-          25,
+          12,
           (await store.list(scope, "objectType"))
             .map((t) => t.data.datasetId)
             .filter(Boolean),
         )
-      : stratifyDatasets(datasets, 60);
+      : stratifyDatasets(datasets, 30);
   const inputVersions = Object.fromEntries(
     datasets.map((d) => [d.id, d.data.activeVersion]),
   );
@@ -1063,7 +1063,7 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         signature = schemaSignature(current),
         // The AI sees a stratified subset; validation and code-picked
         // metrics still run over all datasets below.
-        focalMetrics = stratifyDatasets(current, 60);
+        focalMetrics = stratifyDatasets(current, 30);
       context.metrics = {
         showing: focalMetrics.length,
         total: current.length,
