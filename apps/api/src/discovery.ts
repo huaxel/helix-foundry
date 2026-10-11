@@ -884,13 +884,20 @@ export async function suggestOntology(
   // Counts are asserted by the curator (coverage floors live in the catalog),
   // not measured by Helix; a later validation pass can measure them.
   if (catalog?.joins.length) {
-    const infoByTable = new Map<string, (typeof infos)[number]>();
-    for (const x of infos) {
-      const n = normTable(x.d.name);
-      if (!infoByTable.has(n)) infoByTable.set(n, x);
-      const t = normTable(x.table);
-      if (!infoByTable.has(t)) infoByTable.set(t, x);
-    }
+    // Extract variants share normalized names; each join picks the variant
+    // actually carrying its key (never first-wins).
+    const variants = new Map<string, (typeof infos)[number][]>();
+    for (const x of infos)
+      for (const n of [normTable(x.d.name), normTable(x.table)]) {
+        const list = variants.get(n);
+        if (list) {
+          if (!list.includes(x)) list.push(x);
+        } else variants.set(n, [x]);
+      }
+    const pick = (table: string, key: string) =>
+      (variants.get(normTable(table)) || []).find((x) =>
+        resolveColumn(x.columns, key),
+      );
     const entityByDataset = new Map<string, string>();
     for (const e of entities)
       for (const m of e.members)
@@ -905,12 +912,11 @@ export async function suggestOntology(
       ),
     );
     for (const j of catalog.joins) {
-      const a = infoByTable.get(normTable(j.leftTable)),
-        b = infoByTable.get(normTable(j.rightTable));
+      const a = pick(j.leftTable, j.leftKey),
+        b = pick(j.rightTable, j.rightKey);
       if (!a || !b) continue;
-      const aCol = resolveColumn(a.columns, j.leftKey),
-        bCol = resolveColumn(b.columns, j.rightKey);
-      if (!aCol || !bCol) continue;
+      const aCol = resolveColumn(a.columns, j.leftKey)!,
+        bCol = resolveColumn(b.columns, j.rightKey)!;
       const from = entityByDataset.get(a.d.id),
         to = entityByDataset.get(b.d.id);
       if (!from || !to || from === to) continue;

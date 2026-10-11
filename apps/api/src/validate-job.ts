@@ -1,6 +1,11 @@
 import type { Resource } from "../../../packages/shared/src/index.js";
 import { CatalogSchema } from "../../../packages/shared/src/index.js";
-import { indexCatalog, normTable, resolveColumn } from "./catalog-match.js";
+import {
+  indexCatalog,
+  normTable,
+  resolveColumn,
+  unionTableColumns,
+} from "./catalog-match.js";
 import { transaction, type Store } from "./store.js";
 
 // Advisory catalog audit (no executor): classifies every catalog join as
@@ -32,12 +37,9 @@ export async function runValidateJob(
   if (!parsed.success) return null;
   const catalog = parsed.data;
   if (!catalog.joins.length) return null;
+  const unioned = unionTableColumns(datasets as any[]);
   const byTable = new Map<string, { columns: { name: string }[] }>();
-  for (const d of datasets as any[]) {
-    const n = normTable(d.name || "");
-    if (n && !byTable.has(n) && d.data?.profile?.columns)
-      byTable.set(n, { columns: d.data.profile.columns });
-  }
+  for (const [n, columns] of unioned) byTable.set(n, { columns });
   const appliedIds = new Set(
     ((suggestion.links as any[]) || [])
       .map((l) => l.id)

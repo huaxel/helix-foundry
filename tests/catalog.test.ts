@@ -10,6 +10,11 @@ import { MemoryStore, resource, transaction } from "../apps/api/src/store.js";
 import { ingestRows } from "../apps/api/src/datasets.js";
 import { onboardingState } from "../apps/api/src/onboarding-state.js";
 import { suggestOntology } from "../apps/api/src/discovery.js";
+import {
+  normTable,
+  resolveColumn,
+  unionTableColumns,
+} from "../apps/api/src/catalog-match.js";
 import { createApp } from "../apps/api/src/app.js";
 import { config } from "../apps/api/src/config.js";
 
@@ -130,6 +135,35 @@ it("falls back to statistical discovery without a catalog", async () => {
     [],
   );
   expect(suggestion.unplaced.length).toBeGreaterThan(0);
+});
+
+it("resolves exact, suffix, and label-qualified key columns", () => {
+  const cols = [
+    { name: "PARTNER" },
+    { name: "Partenaire_GPART" },
+    { name: "Taxpayer.return_z019" },
+  ];
+  expect(resolveColumn(cols, "PARTNER")).toBe("PARTNER");
+  expect(resolveColumn(cols, "GPART")).toBe("Partenaire_GPART");
+  expect(resolveColumn(cols, "TAXPAYER")).toBe("Taxpayer.return_z019");
+  expect(resolveColumn(cols, "FBNUM")).toBeUndefined();
+  expect(normTable("stg_pers/ZST_PERSON.parquet")).toBe("ZST_PERSON");
+  expect(normTable("TAX_GENERAL.DFMCA_RETURN")).toBe("DFMCA_RETURN");
+});
+
+it("unions columns across same-name extract variants", () => {
+  const unioned = unionTableColumns([
+    { name: "loader/zrole.parquet", data: { profile: { columns: [{ name: "RoleId" }] } } },
+    { name: "tax_general/zrole.parquet", data: { profile: { columns: [{ name: "ZZ_ROLE_ID" }] } } },
+    { name: "other.parquet", data: {} },
+  ] as any);
+  expect(unioned.get("ZROLE")!.map((c) => c.name).sort()).toEqual([
+    "RoleId",
+    "ZZ_ROLE_ID",
+  ]);
+  expect(resolveColumn(unioned.get("ZROLE")!, "ZZ_ROLE_ID")).toBe(
+    "ZZ_ROLE_ID",
+  );
 });
 
 // General import route: any catalog in this format, replaceable, validated.

@@ -27,7 +27,35 @@ export function resolveColumn(
   const suffix = columns.find(
     (c) => norm(c.name).endsWith(want) && norm(c.name).length > want.length,
   );
-  return suffix?.name;
+  if (suffix) return suffix.name;
+  // Dotted label-qualified columns (Taxpayer.return_z019): the leading label
+  // names the key the column carries.
+  const labeled = columns.find((c) => {
+    const [first] = c.name.split(".");
+    return first !== undefined && norm(first) === want;
+  });
+  return labeled?.name;
+}
+// Unioned columns per normalized table across all same-name datasets (extract
+// variants): a key resolves when ANY variant carries it, never first-wins.
+// Datasets without profile columns are skipped (unimported or keyless).
+export function unionTableColumns(
+  datasets: { name?: string; data?: { profile?: { columns: { name: string }[] } } }[],
+): Map<string, { name: string }[]> {
+  const map = new Map<string, Map<string, { name: string }>>();
+  for (const d of datasets) {
+    const cols = d.data?.profile?.columns;
+    if (!cols) continue;
+    const n = normTable(d.name || "");
+    if (!n) continue;
+    let entry = map.get(n);
+    if (!entry) {
+      entry = new Map();
+      map.set(n, entry);
+    }
+    for (const c of cols) if (!entry.has(c.name)) entry.set(c.name, c);
+  }
+  return new Map([...map].map(([k, v]) => [k, [...v.values()]]));
 }
 export function indexCatalog(catalog: Catalog): Map<string, CatalogTable> {
   const map = new Map<string, CatalogTable>();
