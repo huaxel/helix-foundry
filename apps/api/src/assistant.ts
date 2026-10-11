@@ -40,8 +40,58 @@ import {
   metricsDatasets,
   saveMetrics,
   schemaSignature,
+  stratifyDatasets,
   validateSpecs,
 } from "./metrics.js";
+const FOCUS_STOP = new Set(
+  "which,what,when,where,does,have,most,each,per,our,from,with,that,this,these,those,show,list,find,many,much,between,over,under,into,onto".split(","),
+);
+const nameTokens = (s: string) =>
+  s
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 2 && !FOCUS_STOP.has(t));
+// Rank datasets by token overlap with a question so analysis fits the local
+// model's window: table-name hits weigh most, then column hits, then size.
+// Published anchors always survive so questions about the live workspace
+// keep their datasets.
+export function focusDatasets(
+  datasets: Resource[],
+  goal: string,
+  limit = 25,
+  extraIds: string[] = [],
+) {
+  const qt = new Set(nameTokens(goal));
+  const scored = datasets.map((d) => {
+    const table = new Set(
+      nameTokens(d.name.replace(/\.(parquet|csv|json)$/i, "")),
+    );
+    let score = 0;
+    for (const t of qt) if (table.has(t)) score += 3;
+    for (const c of d.data.profile?.columns || []) {
+      const ct = new Set(nameTokens(c.name));
+      for (const t of qt)
+        if (ct.has(t)) {
+          score += 1;
+          break;
+        }
+    }
+    return { d, score };
+  });
+  scored.sort(
+    (a, b) =>
+      b.score - a.score ||
+      (b.d.data.profile?.rows || 0) - (a.d.data.profile?.rows || 0),
+  );
+  const extra = new Set(extraIds),
+    out: Resource[] = [];
+  for (const d of datasets)
+    if (extra.has(d.id) && out.length < limit) out.push(d);
+  for (const { d } of scored)
+    if (out.length >= limit) break;
+    else if (!out.includes(d)) out.push(d);
+  return out;
+}
 // A resource an Analyst question may be scoped to (active generation only).
 export async function assistantResource(
   store: Store,
@@ -561,6 +611,21 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         ),
     };
   };
+  // A question only needs the datasets it could read: rank by token overlap
+  // with the question (table names weigh most), always keeping the published
+  // ontology's anchors. Full-schema prompts never fit the local model's
+  // window; builds use a stratified subset instead.
+  const focal =
+    run.data.intent === "answer" || run.data.intent === "auto"
+      ? focusDatasets(
+          datasets,
+          run.data.goal,
+          25,
+          (await store.list(scope, "objectType"))
+            .map((t) => t.data.datasetId)
+            .filter(Boolean),
+        )
+      : stratifyDatasets(datasets, 60);
   const inputVersions = Object.fromEntries(
     datasets.map((d) => [d.id, d.data.activeVersion]),
   );
@@ -569,8 +634,11 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
     run.data.inputHash === inputHash ? { ...run.data.checkpoints } : {};
   const context: any = {
     goal: run.data.goal,
-    datasets: datasets.map(mask),
-    page: run.data.context,
+    datasets: focal.map(mask),
+    datasetNote:
+      focal.length < datasets.length
+        ? `Showing the ${focal.length} most relevant of ${datasets.length} datasets; others exist but are omitted for model context limits.`
+        : undefined,
     previous: run.data.parentId
       ? (await store.get(scope, run.data.parentId))?.data.bundle
       : undefined,
@@ -584,12 +652,12 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
     if (out.properties?.datasetId)
       out.properties.datasetId = {
         type: "string",
-        enum: datasets.map((d) => d.id),
+        enum: focal.map((d) => d.id),
       };
     if (out.properties?.inputs && !out.properties?.datasetId)
       out.properties.inputs = {
         ...out.properties.inputs,
-        items: { type: "string", enum: datasets.map((d) => d.id) },
+        items: { type: "string", enum: focal.map((d) => d.id) },
       };
     const names = context.ontology?.ontology?.map((t: any) => t.name) || [];
     if (out.properties?.objectType && names.length)
@@ -992,14 +1060,21 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
       // One call: the AI reads the schema and picks metric specs; code
       // compiles, runs and keeps the ones that work, with no repair calls.
       const current = await metricsDatasets(store, scope),
-        signature = schemaSignature(current);
-      context.metrics = describeForMetrics(current);
+        signature = schemaSignature(current),
+        // The AI sees a stratified subset; validation and code-picked
+        // metrics still run over all datasets below.
+        focalMetrics = stratifyDatasets(current, 60);
+      context.metrics = {
+        showing: focalMetrics.length,
+        total: current.length,
+        datasets: describeForMetrics(focalMetrics),
+      };
       const reply = specsFromPick(
         await ask(
           "home_metrics",
           MetricReplySchema,
           METRICS_PROMPT,
-          metricPickSchema(current),
+          metricPickSchema(focalMetrics),
         ),
       );
       // The AI's working metrics, topped up with code-picked ones run now (so

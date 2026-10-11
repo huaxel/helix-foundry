@@ -111,11 +111,43 @@ export function noun(d: Resource) {
   return n.charAt(0).toUpperCase() + n.slice(1);
 }
 
+// Model context never fits thousands of datasets: stratify to a bounded,
+// domain-covering subset (round-robin top-by-rows per source folder) so the
+// AI sees every part of the data. Code-picked metrics still run over all
+// datasets; only the AI's view is bounded.
+export function stratifyDatasets(datasets: Resource[], limit = 60) {
+  if (datasets.length <= limit) return datasets;
+  const groups = new Map<string, Resource[]>();
+  for (const d of datasets) {
+    const key = d.name.split(" · ")[0] || "other";
+    const list = groups.get(key);
+    if (list) list.push(d);
+    else groups.set(key, [d]);
+  }
+  for (const list of groups.values())
+    list.sort(
+      (a, b) => (b.data.profile?.rows || 0) - (a.data.profile?.rows || 0),
+    );
+  const out: Resource[] = [];
+  while (out.length < limit) {
+    let took = false;
+    for (const list of groups.values()) {
+      if (out.length >= limit) break;
+      const next = list.shift();
+      if (next) {
+        out.push(next);
+        took = true;
+      }
+    }
+    if (!took) break;
+  }
+  return out;
+}
 // What the AI sees: one line per column with its type, and the values of
 // low-cardinality text columns (from the stored profile sample, so no query
 // runs), so filters and breakdowns use real values.
-export function describeForMetrics(datasets: Resource[]) {
-  return datasets.map((d) => {
+export function describeForMetrics(datasets: Resource[], limit = 60) {
+  return stratifyDatasets(datasets, limit).map((d) => {
     const sample: Record<string, unknown>[] = d.data.profile?.sample || [];
     return {
       id: d.id,

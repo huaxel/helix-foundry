@@ -633,8 +633,10 @@ describe("AI-picked metrics", () => {
     ];
     expect(system).toContain(METRICS_PROMPT);
     // The model sees one line per column, never rows.
-    expect(context.datasets).toHaveLength(sampleDatasets().length);
-    for (const d of context.datasets) {
+    expect(context.datasets.showing).toBe(sampleDatasets().length);
+    expect(context.datasets.total).toBe(sampleDatasets().length);
+    expect(context.datasets.datasets).toHaveLength(sampleDatasets().length);
+    for (const d of context.datasets.datasets) {
       expect(d).not.toHaveProperty("sample");
       expect(d.columns.length).toBeGreaterThan(0);
       expect(d.columns.every((c: unknown) => typeof c === "string")).toBe(true);
@@ -647,7 +649,8 @@ describe("AI-picked metrics", () => {
     expect(sent).not.toContain(rowsOf("Stripe · invoices")[0].invoice_id);
     expect(sent).not.toContain(rowsOf("PlanetScale · accounts")[0].domain);
     const columns = (name: string) =>
-      context.datasets.find((d: any) => d.name === name).columns as string[];
+      context.datasets.datasets.find((d: any) => d.name === name)
+        .columns as string[];
     expect(columns("Stripe · invoices")).toContain("invoice_id VARCHAR unique");
     expect(
       columns("Stripe · invoices").find((c) => c.startsWith("status ")),
