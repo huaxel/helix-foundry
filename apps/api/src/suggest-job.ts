@@ -21,9 +21,20 @@ export async function runSuggestJob(
   };
   if (!onboardingSignature || !datasetIds?.length)
     throw new Error("Suggestion inputs changed. Retry the suggestion.");
+  // Chunked loads: hundreds of simultaneous Helix reads overwhelm it.
+  const chunked = async (ids: string[]) => {
+    const out: Resource[] = [];
+    for (let i = 0; i < ids.length; i += 50)
+      out.push(
+        ...(
+          await Promise.all(ids.slice(i, i + 50).map((id) => store.get(scope, id)))
+        ).filter((r) => !!r),
+      );
+    return out;
+  };
   const [datasets, sources] = await Promise.all([
-    Promise.all(datasetIds.map((id) => store.get(scope, id))),
-    Promise.all((sourceIds || []).map((id) => store.get(scope, id))),
+    chunked(datasetIds || []),
+    chunked(sourceIds || []),
   ]);
   const valid = datasets.filter(
     (d) => d && d.data.activeVersion && d.data.profile?.columns,
