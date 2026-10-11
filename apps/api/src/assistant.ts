@@ -1690,7 +1690,9 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
       // page: beyond this bound onboarding publishes dashboard-only and the
       // workspace queries live data instead of staged copies.
       const stagedRows = bundle.ontology.reduce(
-        (n, o) => n + (map.get(o.datasetId)?.data.profile.rows || 0),
+        (n, o) =>
+          n +
+          (datasets.find((d) => d.id === o.datasetId)?.data.profile.rows || 0),
         0,
       );
       await publishProposal(
