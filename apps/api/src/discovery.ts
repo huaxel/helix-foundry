@@ -259,6 +259,28 @@ function declaredKeys(infos: Info[], sources: Map<string, Resource>) {
   }
   return [...out.values()];
 }
+// Normalized schema signature: singularized word-joined column names. Metadata-only;
+// two exports of one table share a signature even when their rows are disjoint.
+const schemaSig = (x: Info) =>
+  new Set(x.columns.map((c) => words(c.name).map(singular).join("_")));
+// A key-named, near-unique column stands in as a provisional anchor key so a group
+// without a proven unique key is still placed instead of dropped. It never drives
+// links; value overlap alone does that.
+function provisionalKey(x: Info) {
+  const ratio = (c: (typeof x.columns)[number]) =>
+    c.distinct / Math.max(1, x.rows - c.nulls);
+  const cands = x.columns.filter(
+    (c) =>
+      keyType(c.type) && keyName(c.name) && c.distinct >= 2 && ratio(c) >= 0.75,
+  );
+  cands.sort(
+    (a, b) =>
+      ratio(b) - ratio(a) ||
+      Number(idName(b.name)) - Number(idName(a.name)) ||
+      cmp(a.name, b.name),
+  );
+  return cands[0]?.name;
+}
 function structFields(type: string) {
   const m = /^STRUCT\((.*)\)$/.exec(type);
   if (!m) return [];
@@ -522,7 +544,7 @@ export async function suggestOntology(
   const appDb = (x: Info) =>
     ["planetscale", "postgres", "mysql"].includes(x.source) ? 1 : 0;
   for (const group of groups.values()) {
-    const anchor = group
+    let anchor = group
       .filter((x) => x.key || x.alt.size)
       .sort(
         (a, b) =>
@@ -531,7 +553,23 @@ export async function suggestOntology(
           b.rows - a.rows ||
           cmp(a.d.name, b.d.name),
       )[0];
+    let provisional: string | undefined;
     if (!anchor) {
+      // No proven unique key: fall back to a name-inferred near-key so the group
+      // is placed, not dropped. It labels the entity; it never drives links.
+      const prot = group
+        .map((x) => ({ x, key: provisionalKey(x) }))
+        .filter((p) => p.key)
+        .sort((a, b) => b.x.rows - a.x.rows || cmp(a.x.d.name, b.x.d.name))[0];
+      if (!prot) {
+        unplaced.push(...group.map((x) => x.d.id));
+        continue;
+      }
+      anchor = prot.x;
+      provisional = prot.key;
+    }
+    const anchorKey = anchor.key || [...anchor.alt][0] || provisional;
+    if (!anchorKey) {
       unplaced.push(...group.map((x) => x.d.id));
       continue;
     }
@@ -542,7 +580,7 @@ export async function suggestOntology(
       datasetId: x.d.id,
       datasetName: x.d.name,
       source: x.source,
-      key: x.key || via?.column || [...x.alt][0],
+      key: x.key || via?.column || [...x.alt][0] || (x === anchor ? anchorKey : ""),
       rows: x.rows,
       matched: x.rows,
       via,
@@ -550,7 +588,7 @@ export async function suggestOntology(
     const draft: Draft = {
       members: [member(anchor, null)],
       anchor,
-      key: anchor.key || [...anchor.alt][0],
+      key: anchorKey,
       kind: "record",
       degree: 0,
       name: "",
@@ -580,6 +618,80 @@ export async function suggestOntology(
     }
     for (const x of group) entityOf.set(x, draft);
     drafts.push(draft);
+  }
+
+  // Same-system drafts whose anchors share a normalized schema are one logical
+  // table (repeated exports, snapshots) even when their rows are disjoint and no
+  // value overlap exists. Metadata-only: no executor calls. Same-system only, so a
+  // Parquet email never merges with a Stripe email on name alone.
+  {
+    const sigs = new Map(drafts.map((d) => [d, schemaSig(d.anchor)] as const));
+    const uses = new Map<string, number>();
+    for (const s of sigs.values())
+      for (const n of s) uses.set(n, (uses.get(n) || 0) + 1);
+    // Corpus-relative rarity: a shared name is distinctive when few datasets use
+    // it, so a shared id alone never merges while a shared sku can.
+    const distinctive = (n: string) =>
+      (uses.get(n) || 0) <= Math.max(3, infos.length / 4);
+    const mergeable = (a: Draft, b: Draft) => {
+      if (a === b || a.anchor.system !== b.anchor.system) return false;
+      const sa = sigs.get(a)!,
+        sb = sigs.get(b)!;
+      let shared = 0;
+      for (const n of sa) if (sb.has(n)) shared++;
+      if (shared < 2) return false;
+      if (![...sa].some((n) => sb.has(n) && distinctive(n))) return false;
+      const union = sa.size + sb.size - shared,
+        score = union ? shared / union : 0;
+      return (
+        score === 1 ||
+        (score >= 0.8 && Math.min(sa.size, sb.size) >= 4 && shared >= 3)
+      );
+    };
+    const parent = new Map(drafts.map((d) => [d, d] as const));
+    const find = (d: Draft): Draft => {
+      const p = parent.get(d)!;
+      if (p === d) return d;
+      const r = find(p);
+      parent.set(d, r);
+      return r;
+    };
+    for (let i = 0; i < drafts.length; i++)
+      for (let j = i + 1; j < drafts.length; j++)
+        if (mergeable(drafts[i], drafts[j])) {
+          const a = find(drafts[i]),
+            b = find(drafts[j]);
+          if (a !== b) parent.set(b, a);
+        }
+    const sets = new Map<Draft, Draft[]>();
+    for (const d of drafts) {
+      const r = find(d);
+      sets.set(r, [...(sets.get(r) || []), d]);
+    }
+    for (const group of sets.values()) {
+      if (group.length < 2) continue;
+      const survivor = [...group].sort(
+        (a, b) =>
+          b.anchor.rows - a.anchor.rows || cmp(a.anchor.d.name, b.anchor.d.name),
+      )[0];
+      for (const d of group) {
+        if (d === survivor) continue;
+        for (const m of d.members) {
+          const x = infos.find((i) => i.d.id === m.datasetId)!;
+          survivor.members.push({
+            datasetId: m.datasetId,
+            datasetName: m.datasetName,
+            source: m.source,
+            key: survivor.key,
+            rows: m.rows,
+            matched: m.rows,
+            via: null,
+          });
+          entityOf.set(x, survivor);
+        }
+        drafts.splice(drafts.indexOf(d), 1);
+      }
+    }
   }
 
   // One link per entity pair and column; prefer the target entity's anchor dataset.

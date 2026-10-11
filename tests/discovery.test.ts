@@ -663,3 +663,114 @@ it("names entities after files, not their folders", async () => {
     "Order",
   ]);
 });
+
+it("merges same-system exports with identical schemas and disjoint rows", async () => {
+  const auto = { kind: "local", connection: "connection_local-auto" };
+  const cols = (start: number) =>
+    range(10, (i) => ({
+      order_id: "o" + (start + i),
+      customer_id: "c" + (start + i),
+      amount: (start + i) * 10,
+      status: "paid",
+    }));
+  const { suggestion } = await suggestFor([
+    { ...auto, name: "orders_2023.parquet", rows: cols(0) },
+    { ...auto, name: "orders_2024.parquet", rows: cols(100) },
+  ]);
+  // Disjoint keys: no value overlap, yet one entity via shared schema.
+  expect(suggestion.entities).toHaveLength(1);
+  const [entity] = suggestion.entities;
+  expect(entity.key).toBe("order_id");
+  expect(entity.members).toHaveLength(2);
+});
+
+it("merges same-system tables sharing most of a distinctive schema", async () => {
+  const auto = { kind: "local", connection: "connection_local-auto" };
+  const base = (start: number) =>
+    range(10, (i) => ({
+      order_id: "o" + (start + i),
+      customer_id: "c" + (start + i),
+      amount: (start + i) * 10,
+      status: "paid",
+      created_at: "2024-01-01",
+    }));
+  const { suggestion } = await suggestFor([
+    { ...auto, name: "orders.parquet", rows: base(0) },
+    {
+      ...auto,
+      name: "orders_audit.parquet",
+      rows: base(100).map((r) => ({ ...r, note: "x" })),
+    },
+  ]);
+  expect(suggestion.entities).toHaveLength(1);
+  expect(suggestion.entities[0].members).toHaveLength(2);
+});
+
+it("does not merge same-system tables sharing only ubiquitous names", async () => {
+  const auto = { kind: "local", connection: "connection_local-auto" };
+  const generic = (start: number, extra?: Record<string, unknown>) =>
+    range(5, (i) => ({
+      id: start + i,
+      name: "N" + (start + i),
+      created_at: "2024-01-01",
+      ...extra,
+    }));
+  const { suggestion } = await suggestFor([
+    { ...auto, name: "as.parquet", rows: generic(0) },
+    { ...auto, name: "bs.parquet", rows: generic(100) },
+    { ...auto, name: "cs.parquet", rows: generic(200, { sku: "s" }) },
+    { ...auto, name: "ds.parquet", rows: generic(300, { vin: "v" }) },
+    { ...auto, name: "es.parquet", rows: generic(400, { iban: "b" }) },
+    { ...auto, name: "fs.parquet", rows: generic(500, { slug: "g" }) },
+  ]);
+  // as/bs share an identical generic schema, but id/name/created_at appear in all
+  // six tables, so nothing distinctive ties as to bs.
+  expect(suggestion.entities).toHaveLength(6);
+});
+
+it("does not merge identical schemas across systems on names alone", async () => {
+  const rows = (start: number) =>
+    range(10, (i) => ({
+      order_id: "o" + (start + i),
+      customer_id: "c" + (start + i),
+      sku: "s" + (start + i),
+    }));
+  const { suggestion } = await suggestFor([
+    {
+      kind: "local",
+      connection: "conn-a",
+      name: "orders.parquet",
+      rows: rows(0),
+    },
+    {
+      kind: "local",
+      connection: "conn-b",
+      name: "orders.parquet",
+      rows: rows(100),
+    },
+  ]);
+  // Identical distinctive schemas with disjoint values, but different systems:
+  // cross-system merges still need value proof.
+  expect(suggestion.entities).toHaveLength(2);
+});
+
+it("places a keyless table on a name-inferred near-key instead of dropping it", async () => {
+  const { suggestion } = await suggestFor([
+    {
+      name: "events.parquet",
+      rows: [
+        ...range(9, (i) => ({
+          event_id: "e" + i,
+          customer_id: "c" + (i % 3),
+          status: "done",
+        })),
+        { event_id: "e0", customer_id: "c0", status: "done" },
+      ],
+    },
+  ]);
+  // event_id is 9/10 unique (not a proven key) but key-named: placed, not dropped.
+  expect(suggestion.entities).toHaveLength(1);
+  const [entity] = suggestion.entities;
+  expect(entity.key).toBe("event_id");
+  expect(entity.members).toHaveLength(1);
+});
