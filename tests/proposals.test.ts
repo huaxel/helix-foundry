@@ -110,7 +110,7 @@ async function setup(count: number) {
         events: [],
         calls: 0,
         tokens: 0,
-        task: "describe_ontology",
+        task: "propose_names",
         datasetIds: ["d1", "d2"],
         onboardingSignature: sig,
         ontologyHash: "h",
@@ -145,24 +145,21 @@ it("proposes bulk names for large grounded slug sets in batches", async () => {
   await setup(55);
   const ai = mockGenerate();
   await buildWorkspace(store, scope, "run-describe");
-  // Fully catalogued: no describe calls; proposals in batches of 10 (6 calls).
+  // Proposals only (no describe calls): batches of 10 (6 calls).
   expect(ai).toHaveBeenCalledTimes(6);
   const stored = (await store.get(scope, "workspace"))?.data.onboarding
     .ontologySuggestion;
-  expect(stored.described).toBe(true);
   expect(Object.keys(stored.nameProposals || {})).toHaveLength(55);
   expect(stored.nameProposals.e0).toBe("Proposed e0");
   expect(stored.nameProposals.e54).toBe("Proposed e54");
 });
 
-it("skips proposals for small suggestions", async () => {
+it("proposes grounded names without a bulk gate when queued directly", async () => {
   await setup(10);
   const ai = mockGenerate();
   await buildWorkspace(store, scope, "run-describe");
-  // Fully catalogued and small: neither describe nor proposals call the model.
-  expect(ai).toHaveBeenCalledTimes(0);
+  expect(ai).toHaveBeenCalledTimes(1);
   const stored = (await store.get(scope, "workspace"))?.data.onboarding
     .ontologySuggestion;
-  expect(stored.described).toBe(true);
-  expect(stored.nameProposals).toBeUndefined();
+  expect(Object.keys(stored.nameProposals || {})).toHaveLength(10);
 });

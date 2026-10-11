@@ -1219,79 +1219,6 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         });
         return true;
       });
-      // Bulk name proposals for slug-named entities (large suggestions only;
-      // small sets are hand-renamed). Proposals are stored, never applied —
-      // confirmation carries the user's names. Confident proposals only; gaps
-      // stay slugs for a human.
-      // Only definition-grounded slugs are proposed (no signal → no guessing;
-      // humans name the rest). Small batches for weak local models, stored
-      // progressively so early batches survive later failures.
-      const slugs = s.entities.filter(
-        (e) => (e.namedBy || "slug") === "slug" && catalogDefs.has(e.id),
-      );
-      if (slugs.length > 50 && applied) {
-        const preEntities = context.ontology!.entities,
-          preLinks = context.ontology!.links;
-        const byId = new Map<string, any>(
-          (preEntities as any[]).map((e) => [e.id, e]),
-        );
-        const slugIds = new Set(slugs.map((e) => e.id));
-        for (let i = 0; i < slugs.length; i += 10) {
-          const slice = slugs.slice(i, i + 10).map((e) => {
-            const full = byId.get(e.id) || {};
-            return {
-              id: e.id,
-              slug: e.name,
-              definition: catalogDefs.get(e.id),
-              properties: (full.properties || []).slice(0, 8),
-              tables: (full.sources || []).slice(0, 3).map((m: any) => m.dataset),
-            };
-          });
-          (context.ontology as any).entities = slice;
-          (context.ontology as any).links = [];
-          try {
-            const res = await ask(
-              `propose_names_${i / 10}`,
-              z.object({
-                names: z
-                  .array(z.object({ id: z.string(), name: z.string() }))
-                  .default([]),
-              }),
-              "Propose concise business names (Title Case, at most 40 characters) for database tables from their slug, definition, properties and source tables. Expand an abbreviation only when certain. If meaning is unclear, omit the id (no proposal is better than a wrong name). Return one entry per id proposed.",
-            );
-            const batch: Record<string, string> = {};
-            const got = (res as any).names;
-            if (Array.isArray(got))
-              for (const n of got) {
-                if (!n || typeof n.id !== "string" || !slugIds.has(n.id)) continue;
-                const clean = clip(String(n.name || ""), 60).replace(/[.:;,]+$/, "");
-                if (clean) batch[n.id] = clean;
-              }
-            if (Object.keys(batch).length)
-              await transaction(store, scope, async (tx) => {
-                const w = (await tx.get("workspace"))!,
-                  m = w.data.onboarding || {},
-                  current = m.ontologySuggestion;
-                if (current?.signature !== s.signature || current.hash !== s.hash)
-                  return;
-                tx.update(w, {
-                  ...w.data,
-                  onboarding: {
-                    ...m,
-                    ontologySuggestion: {
-                      ...current,
-                      nameProposals: { ...(current.nameProposals || {}), ...batch },
-                    },
-                  },
-                });
-              });
-          } catch {
-            // A failed batch only skips its proposals; the rest stand.
-          }
-        }
-        (context.ontology as any).entities = preEntities;
-        (context.ontology as any).links = preLinks;
-      }
       await event(
         store,
         scope,
@@ -1302,6 +1229,113 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
           : "The suggested ontology changed; kept its computed descriptions",
         { status: "succeeded" },
       );
+      return;
+    }
+    // Standalone bulk naming: proposes business names for definition-grounded
+    // slugs (any count; explicitly queued, so no bulk gate). Stored, never
+    // applied. Small batches for weak local models, progressive persistence.
+    if (run.data.task === "propose_names") {
+      const stored = (await store.get(scope, "workspace"))?.data.onboarding
+        ?.ontologySuggestion;
+      assert(
+        stored?.signature === run.data.onboardingSignature &&
+          stored.hash === run.data.ontologyHash,
+        "The suggested ontology changed. Review it again.",
+        409,
+      );
+      const s = SuggestedOntologySchema.parse(stored);
+      const defs = new Map<string, string>();
+      try {
+        const cat = await store.get(scope, "catalog");
+        const parsed = CatalogSchema.safeParse(cat?.data);
+        if (parsed.success) {
+          const index = indexCatalog(parsed.data);
+          const dsById = new Map(datasets.map((d) => [d.id, d]));
+          for (const e of s.entities) {
+            const ds = dsById.get((e as any).anchorDatasetId);
+            const entry =
+              (ds && index.get(normTable(ds.name))) ||
+              index.get(normTable((e as any).name || ""));
+            const def = entry?.definition?.trim();
+            if (def) defs.set(e.id, def);
+          }
+        }
+      } catch {
+        // No usable catalog: nothing grounded, nothing proposed.
+      }
+      const slugs = s.entities.filter(
+        (e) => (e.namedBy || "slug") === "slug" && defs.has(e.id),
+      );
+      const clip = (v: string, n: number) =>
+        v.replace(/\s+/g, " ").trim().slice(0, n);
+      const byId = new Map<string, any>(
+        s.entities.map((e) => [e.id, e]),
+      );
+      const slugIds = new Set(slugs.map((e) => e.id));
+      let proposed = 0;
+      for (let i = 0; i < slugs.length; i += 10) {
+        const slice = slugs.slice(i, i + 10).map((e) => {
+          const full = byId.get(e.id) || {};
+          return {
+            id: e.id,
+            slug: e.name,
+            definition: defs.get(e.id),
+            properties: ((full as any).properties || []).slice(0, 8),
+            tables: (((full as any).members || []) as any[])
+              .slice(0, 3)
+              .map((m: any) => m.datasetName),
+          };
+        });
+        (context as any).ontology = {
+          ...((context.ontology as any) || {}),
+          entities: slice,
+          links: [],
+        };
+        try {
+          const res = await ask(
+            `propose_names_${i / 10}`,
+            z.object({
+              names: z
+                .array(z.object({ id: z.string(), name: z.string() }))
+                .default([]),
+            }),
+            "Propose concise business names (Title Case, at most 40 characters) for database tables from their slug, definition, properties and source tables. Expand an abbreviation only when certain. If meaning is unclear, omit the id (no proposal is better than a wrong name). Return one entry per id proposed.",
+          );
+          const batch: Record<string, string> = {};
+          const got = (res as any).names;
+          if (Array.isArray(got))
+            for (const n of got) {
+              if (!n || typeof n.id !== "string" || !slugIds.has(n.id)) continue;
+              const clean = clip(String(n.name || ""), 60).replace(/[.:;,]+$/, "");
+              if (clean) batch[n.id] = clean;
+            }
+          if (Object.keys(batch).length) {
+            await transaction(store, scope, async (tx) => {
+              const w = (await tx.get("workspace"))!,
+                m = w.data.onboarding || {},
+                current = m.ontologySuggestion;
+              if (current?.signature !== s.signature || current.hash !== s.hash)
+                return;
+              proposed += Object.keys(batch).length;
+              tx.update(w, {
+                ...w.data,
+                onboarding: {
+                  ...m,
+                  ontologySuggestion: {
+                    ...current,
+                    nameProposals: { ...(current.nameProposals || {}), ...batch },
+                  },
+                },
+              });
+            });
+          }
+        } catch {
+          // A failed batch only skips its proposals; the rest stand.
+        }
+      }
+      await event(store, scope, id, "complete", `Proposed ${proposed} business names`, {
+        status: "succeeded",
+      });
       return;
     }
     if (run.data.task === "recommend_outcomes") {
