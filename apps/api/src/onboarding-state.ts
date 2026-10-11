@@ -19,15 +19,23 @@ export async function onboardingState(
   assert(workspace, "Workspace not found", 404);
   const m = workspace.data.onboarding || {};
   const excluded: string[] = m.excludedIds || [];
-  const [allDatasets, allSources, allJobs, provider, dashboards, operations] =
-    await Promise.all([
-      store.list(scope, "dataset"),
-      store.list(scope, "source"),
-      store.list(scope, "job"),
-      store.get(scope, "provider"),
-      store.list(scope, "dashboard"),
-      store.list(scope, "operation"),
-    ]);
+  const [
+    allDatasets,
+    allSources,
+    allJobs,
+    provider,
+    dashboards,
+    operations,
+    catalog,
+  ] = await Promise.all([
+    store.list(scope, "dataset"),
+    store.list(scope, "source"),
+    store.list(scope, "job"),
+    store.get(scope, "provider"),
+    store.list(scope, "dashboard"),
+    store.list(scope, "operation"),
+    store.get(scope, "catalog"),
+  ]);
   // Older batch imports stored their grouping on the operation, not the source.
   const connections = new Map<string, string>();
   for (const operation of operations)
@@ -102,8 +110,12 @@ export async function onboardingState(
   }
   if (!datasets.length)
     blockers.push("Import at least one dataset to continue.");
+  // The suggestion depends on the catalog too: importing or replacing it
+  // invalidates the stored suggestion so it recomputes with curated semantics.
+  const catalogHash = catalog ? digest(JSON.stringify(catalog.data)) : null;
   const signature = digest(
     JSON.stringify({
+      catalog: catalogHash,
       datasets: datasets
         .map((d) => [d.id, d.data.activeVersion, d.data.pendingVersion || null])
         .sort(),
