@@ -943,7 +943,10 @@ export async function suggestOntology(
     }
   }
 
-  await throughAnchor(store, scope, links, entities);
+  // Anchor reachability refinement only pays for statistical member links;
+  // curated links are already anchor-correct (and asserted counts stand).
+  // Skipping also avoids pathological multi-hop scans over giant tables.
+  if (refs.length) await throughAnchor(store, scope, links, entities);
 
   const notes: SuggestedOntology["notes"] = [];
   const info = (id: string) => infos.find((x) => x.d.id === id)!;
