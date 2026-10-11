@@ -1162,7 +1162,9 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
             prompt,
             );
           } catch (error) {
-            // A failed batch only skips its slice; the rest still describe.
+            // A single batch failing fails the run (loud, retryable); with
+            // several batches the failed slice is skipped and the rest land.
+            if (gapEntities.length <= 10) throw error;
             console.warn(`[assistant] describe batch ${i / 10} skipped:`, error instanceof Error ? error.message : error);
           }
           if (!chunk) continue;
