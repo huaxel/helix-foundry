@@ -296,6 +296,9 @@ export const SuggestedEntitySchema = z.object({
   // Activity streams (e.g. product events) feed metrics but are not stored as records.
   kind: z.enum(["record", "activity"]),
   anchorDatasetId: z.string(),
+  // Name provenance: catalog business term, derived from a definition,
+  // or a raw slug still needing a proper name.
+  namedBy: z.enum(["catalog", "derived", "slug"]).optional(),
   key: z.string(),
   rows: z.number(),
   members: z.array(OntologyMemberSchema).min(1),
@@ -330,6 +333,9 @@ export const SuggestedOntologySchema = z.object({
   // True once the AI has written the summary and descriptions.
   described: z.boolean(),
   entities: z.array(SuggestedEntitySchema),
+  // Proposed business names for slug-named entities (model suggestions for
+  // bulk review; never applied automatically — confirmation carries names).
+  nameProposals: z.record(z.string(), z.string()).optional(),
   links: z.array(SuggestedLinkSchema),
   notes: z.array(OntologyNoteSchema),
   unplaced: z.array(z.string()),

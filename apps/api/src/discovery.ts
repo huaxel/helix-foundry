@@ -64,6 +64,7 @@ type Draft = {
   degree: number;
   name: string;
   id: string;
+  namedBy?: SuggestedEntity["namedBy"];
 };
 
 const labels: Record<string, string> = {
@@ -801,6 +802,7 @@ export async function suggestOntology(
     ids = new Set<string>();
   for (const d of drafts) {
     // An imported catalog names entities; the existing dedupe still applies.
+    // Provenance is recorded so bulk renaming can target slugs later.
     const catalogued = [d.anchor, ...d.members.map((m) => infos.find((x) => x.d.id === m.datasetId)!)].find(
       (x) =>
         x &&
@@ -808,11 +810,12 @@ export async function suggestOntology(
           catalogFor(x.d.name) || catalogFor(x.table) || { table: "" },
         ),
     );
-    const business = catalogued
-      ? derivedBusinessName(
-          (catalogFor(catalogued.d.name) || catalogFor(catalogued.table))!,
-        )
-      : "";
+    const entry = catalogued
+      ? catalogFor(catalogued.d.name) || catalogFor(catalogued.table)
+      : undefined;
+    const explicit = entry?.businessName?.trim() || "";
+    const business = catalogued ? derivedBusinessName(entry!) : "";
+    d.namedBy = explicit ? "catalog" : business ? "derived" : "slug";
     let name = business || entityName(d.anchor.table);
     if (names.has(name.toLowerCase()))
       name =
@@ -848,6 +851,7 @@ export async function suggestOntology(
     const entity: SuggestedEntity = {
       id: d.id,
       name: d.name,
+      namedBy: d.namedBy || "slug",
       description,
       kind: d.kind,
       anchorDatasetId: d.anchor.d.id,

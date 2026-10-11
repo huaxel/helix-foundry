@@ -626,7 +626,12 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
     let res: { value: unknown; tokens: number };
     // Describing the suggested ontology needs its structure, not dataset rows;
     // picking metrics needs only the schema.
-    const describing = stage === "describe_ontology",
+    // Suffixed batch stages (describe_ontology_0, propose_names_1, …) carry
+    // ontology payloads exactly like their base stage.
+    const describing =
+        stage === "describe_ontology" ||
+        stage.startsWith("describe_ontology_") ||
+        stage.startsWith("propose_names"),
       picking = stage === "home_metrics";
     try {
       res = await model.generate(
@@ -1126,13 +1131,14 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         for (let i = 0; i < gapEntities.length; i += 40) {
           const first = i === 0;
           // Scope the ambient ask() context per batch (first carries summary
-          // context; later batches only their slice).
+          // context; later batches only their slice). Stages are per-batch so
+          // resumed runs replay each batch instead of repeating the first.
           (context.ontology as any).entities = first
             ? [...gapEntities.slice(i, i + 40), ...cataloguedContext]
             : gapEntities.slice(i, i + 40);
           (context.ontology as any).links = first ? gapLinks : [];
           const chunk = await ask(
-            "describe_ontology",
+            `describe_ontology_${i / 40}`,
             first
               ? z.object({
                   summary: z.string(),
@@ -1203,6 +1209,71 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         });
         return true;
       });
+      // Bulk name proposals for slug-named entities (large suggestions only;
+      // small sets are hand-renamed). Proposals are stored, never applied —
+      // confirmation carries the user's names. Confident proposals only; gaps
+      // stay slugs for a human.
+      const slugs = s.entities.filter((e) => (e.namedBy || "slug") === "slug");
+      if (slugs.length > 50 && applied) {
+        const preEntities = context.ontology!.entities,
+          preLinks = context.ontology!.links;
+        const byId = new Map<string, any>(
+          (preEntities as any[]).map((e) => [e.id, e]),
+        );
+        const proposals: Record<string, string> = {};
+        const slugIds = new Set(slugs.map((e) => e.id));
+        for (let i = 0; i < slugs.length; i += 40) {
+          const slice = slugs.slice(i, i + 40).map((e) => {
+            const full = byId.get(e.id) || {};
+            return {
+              id: e.id,
+              slug: e.name,
+              definition: catalogDefs.get(e.id),
+              properties: (full.properties || []).slice(0, 8),
+              tables: (full.sources || []).slice(0, 3).map((m: any) => m.dataset),
+            };
+          });
+          (context.ontology as any).entities = slice;
+          (context.ontology as any).links = [];
+          try {
+            const res = await ask(
+              `propose_names_${i / 40}`,
+              z.object({
+                names: z.array(
+                  z.object({ id: z.string(), name: z.string() }),
+                ),
+              }),
+              "Propose concise business names (Title Case, at most 40 characters) for database tables from their slug, definition, properties and source tables. Expand an abbreviation only when certain. If meaning is unclear, omit the id (no proposal is better than a wrong name). Return one entry per id proposed.",
+            );
+            const got = (res as any).names;
+            if (Array.isArray(got))
+              for (const n of got) {
+                if (!n || typeof n.id !== "string" || !slugIds.has(n.id)) continue;
+                const clean = clip(String(n.name || ""), 60).replace(/[.:;,]+$/, "");
+                if (clean) proposals[n.id] = clean;
+              }
+          } catch (e) {
+            console.log("DEBUG ask threw:", e instanceof Error ? e.message.slice(0, 150) : String(e).slice(0, 150));
+          }
+        }
+        (context.ontology as any).entities = preEntities;
+        (context.ontology as any).links = preLinks;
+        if (Object.keys(proposals).length)
+          await transaction(store, scope, async (tx) => {
+            const w = (await tx.get("workspace"))!,
+              m = w.data.onboarding || {},
+              current = m.ontologySuggestion;
+            if (current?.signature !== s.signature || current.hash !== s.hash)
+              return;
+            tx.update(w, {
+              ...w.data,
+              onboarding: {
+                ...m,
+                ontologySuggestion: { ...current, nameProposals: proposals },
+              },
+            });
+          });
+      }
       await event(
         store,
         scope,
