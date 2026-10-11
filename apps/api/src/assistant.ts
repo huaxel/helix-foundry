@@ -95,16 +95,34 @@ async function datasetsMap(store: Store, scope: string) {
       .map((d) => [d.id, d]),
   );
 }
-function inputsFor(ids: string[], datasets: Map<string, Resource>) {
-  return [...new Set(ids)].map((id) => {
-    const d = datasets.get(id);
-    assert(d?.data.activeVersion, `Unknown dataset ${id}`);
-    return {
-      table: datasetTable(id),
-      version: d.data.activeVersion as string,
-      aliases: datasetAliases(d.name),
-    };
-  });
+export async function inputsFor(
+  store: Store,
+  scope: string,
+  ids: string[],
+  datasets: Map<string, Resource>,
+) {
+  // Local Parquet datasets are file references, not snapshots: forward the
+  // version's source path so the executor reads the mounted file instead of
+  // a snapshot that was never materialized. Derived-only inputs have no
+  // version record and keep resolving to their persisted snapshot.
+  return Promise.all(
+    [...new Set(ids)].map(async (id) => {
+      const d = datasets.get(id);
+      assert(d?.data.activeVersion, `Unknown dataset ${id}`);
+      const v = await store.get(scope, d.data.activeVersion as string);
+      return {
+        table: datasetTable(id),
+        version: d.data.activeVersion as string,
+        ...(v?.data?.sourcePath
+          ? {
+              sourcePath: v.data.sourcePath,
+              sourceFingerprint: v.data.sourceFingerprint,
+            }
+          : {}),
+        aliases: datasetAliases(d.name),
+      };
+    }),
+  );
 }
 export async function validateBundle(
   store: Store,
@@ -183,7 +201,7 @@ export async function validateBundle(
     return execute({
       mode: "query",
       scope,
-      inputs: inputsFor(ids, datasets),
+      inputs: await inputsFor(store, scope, ids, datasets),
       sql,
       version: randomUUID(),
       persist,
@@ -862,7 +880,7 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         return execute({
           mode: "query",
           scope,
-          inputs: inputsFor(p.inputs, map),
+          inputs: await inputsFor(store, scope, p.inputs, map),
           sql: p.sql,
           version: randomUUID(),
           limit: 100,
@@ -1811,7 +1829,7 @@ export async function publishProposal(
       const r = await execute({
         mode: "query",
         scope,
-        inputs: inputsFor([type.datasetId], map),
+        inputs: await inputsFor(store, scope, [type.datasetId], map),
         sql: `SELECT * FROM "${datasetTable(type.datasetId)}"`,
         version: randomUUID(),
         offset,
@@ -1868,7 +1886,12 @@ export async function publishProposal(
       const r = await execute({
         mode: "query",
         scope,
-        inputs: inputsFor([fromType.datasetId, toType.datasetId], map),
+        inputs: await inputsFor(
+          store,
+          scope,
+          [fromType.datasetId, toType.datasetId],
+          map,
+        ),
         sql,
         version: randomUUID(),
         offset,
