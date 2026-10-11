@@ -9,6 +9,8 @@ import {
   type SuggestedOntology,
 } from "../../../packages/shared/src/index.js";
 import { pipelineId, queryDatasets } from "./datasets.js";
+import { indexCatalog, normTable, resolveColumn } from "./catalog-match.js";
+import { CatalogSchema, type Catalog } from "../../../packages/shared/src/index.js";
 import { assert, digest } from "./security.js";
 import type { Store } from "./store.js";
 
@@ -339,8 +341,25 @@ export async function suggestOntology(
         alt: new Set<string>(),
       };
     });
+  // An imported data catalog (any upstream) overrides guessing: asserted keys
+  // place keyless tables, business names replace slugs, and curated joins
+  // become links. Absent a catalog, discovery falls back to statistical/AI.
+  let catalog: Catalog | undefined;
+  try {
+    const stored = await store.get(scope, "catalog");
+    if (stored) catalog = CatalogSchema.parse(stored.data);
+  } catch {
+    catalog = undefined;
+  }
+  const catalogTables = catalog ? indexCatalog(catalog) : new Map();
+  const catalogFor = (datasetName: string) =>
+    catalogTables.get(normTable(datasetName));
   for (const x of infos) {
     x.key = ownKey(x);
+    const entry = catalogFor(x.d.name) || catalogFor(x.table);
+    if (!x.key && entry?.keys?.length)
+      // Asserted (possibly composite) key, trusted on import.
+      x.key = entry.keys[0].join(" + ");
     for (const c of x.columns)
       if (
         c.name !== x.key &&
@@ -773,7 +792,15 @@ export async function suggestOntology(
   const names = new Set<string>(),
     ids = new Set<string>();
   for (const d of drafts) {
-    let name = entityName(d.anchor.table);
+    // An imported catalog names entities; the existing dedupe still applies.
+    const catalogued = [d.anchor, ...d.members.map((m) => infos.find((x) => x.d.id === m.datasetId)!)].find(
+      (x) => x && (catalogFor(x.d.name) || catalogFor(x.table))?.businessName,
+    );
+    const business = catalogued
+      ? (catalogFor(catalogued.d.name) || catalogFor(catalogued.table))!
+          .businessName!.trim()
+      : "";
+    let name = business || entityName(d.anchor.table);
     if (names.has(name.toLowerCase()))
       name =
         `${name} (${d.anchor.source === "upload" ? "upload" : sourceLabel(d.anchor.source)})`.slice(
@@ -849,6 +876,69 @@ export async function suggestOntology(
       evidence: e.evidence,
     };
   });
+
+  // Curated joins from an imported catalog become links (evidence declared).
+  // Counts are asserted by the curator (coverage floors live in the catalog),
+  // not measured by Helix; a later validation pass can measure them.
+  if (catalog?.joins.length) {
+    const infoByTable = new Map<string, (typeof infos)[number]>();
+    for (const x of infos) {
+      const n = normTable(x.d.name);
+      if (!infoByTable.has(n)) infoByTable.set(n, x);
+      const t = normTable(x.table);
+      if (!infoByTable.has(t)) infoByTable.set(t, x);
+    }
+    const entityByDataset = new Map<string, string>();
+    for (const e of entities)
+      for (const m of e.members)
+        if (!entityByDataset.has(m.datasetId))
+          entityByDataset.set(m.datasetId, e.id);
+    const covered = new Set(
+      links.map((l) =>
+        [
+          `${l.fromDatasetId}|${l.fromColumn}|${l.toDatasetId}|${l.toColumn}`,
+          `${l.toDatasetId}|${l.toColumn}|${l.fromDatasetId}|${l.fromColumn}`,
+        ].join("~"),
+      ),
+    );
+    for (const j of catalog.joins) {
+      const a = infoByTable.get(normTable(j.leftTable)),
+        b = infoByTable.get(normTable(j.rightTable));
+      if (!a || !b) continue;
+      const aCol = resolveColumn(a.columns, j.leftKey),
+        bCol = resolveColumn(b.columns, j.rightKey);
+      if (!aCol || !bCol) continue;
+      const from = entityByDataset.get(a.d.id),
+        to = entityByDataset.get(b.d.id);
+      if (!from || !to || from === to) continue;
+      if (
+        covered.has(
+          `${a.d.id}|${aCol}|${b.d.id}|${bCol}~${b.d.id}|${bCol}|${a.d.id}|${aCol}`,
+        )
+      )
+        continue;
+      let id =
+        `catalog-${normTable(j.leftTable)}-${j.leftKey}-${normTable(j.rightTable)}-${j.rightKey}`
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-");
+      for (let n = 2; linkIds.has(id); n++) id = `${id}-${n}`;
+      linkIds.add(id);
+      links.push({
+        id,
+        name: "references",
+        from,
+        to,
+        fromDatasetId: a.d.id,
+        fromColumn: aCol,
+        toDatasetId: b.d.id,
+        toColumn: bCol,
+        totalRows: a.rows,
+        matchedRows: a.rows,
+        caseInsensitive: false,
+        evidence: "declared",
+      });
+    }
+  }
 
   await throughAnchor(store, scope, links, entities);
 

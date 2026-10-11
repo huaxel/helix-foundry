@@ -17,6 +17,7 @@ import { pipelinesSchemas } from "./routes/pipelines.js";
 import { ontologySchemas } from "./routes/ontology.js";
 import { analystSchemas } from "./routes/analyst.js";
 import { workspaceSchemas } from "./routes/workspace.js";
+import { catalogSchemas } from "./routes/catalog.js";
 // Request bodies for the docs, keyed "METHOD /path". Area route modules export
 // their own maps; setup (onboarding, hosting) stays here.
 const schemas: RequestSchemas = {
@@ -42,6 +43,7 @@ const schemas: RequestSchemas = {
   ...ontologySchemas,
   ...analystSchemas,
   ...workspaceSchemas,
+  ...catalogSchemas,
 };
 export function openapiTransform({ schema, url, route }: any) {
   const body = schemas[`${route.method} ${url}`],

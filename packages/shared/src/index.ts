@@ -390,5 +390,6 @@ export type OnboardingState = z.infer<typeof OnboardingStateSchema>;
 export * from "./data.js";
 export * from "./pipelines.js";
 export * from "./ontology.js";
+export * from "./catalog.js";
 export * from "./analyst.js";
 export * from "./workspace.js";

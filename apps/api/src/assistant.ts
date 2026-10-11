@@ -10,6 +10,7 @@ import {
   OutcomeRecommendationsSchema,
   ProviderSchema,
   SuggestedOntologySchema,
+  CatalogSchema,
   PipelineSchema,
   OntologySchema,
   RelationshipSchema,
@@ -27,6 +28,7 @@ import { execute } from "./executor.js";
 import { config } from "./config.js";
 import { pipelineId } from "./datasets.js";
 import { ontologyBundle, overviewDashboard } from "./discovery.js";
+import { indexCatalog, normTable } from "./catalog-match.js";
 import {
   METRICS_PROMPT,
   computedSpecs,
@@ -1057,17 +1059,107 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         })),
         notes: s.notes.map((n) => n.text),
       };
-      const text = await ask(
-        "describe_ontology",
-        z.object({
-          summary: z.string(),
-          entities: z.array(
-            z.object({ id: z.string(), description: z.string() }),
-          ),
-          links: z.array(z.object({ id: z.string(), name: z.string() })),
-        }),
-        "Describe the suggested ontology for a business user. Its structure is fixed: never add, remove, merge or rename entities or links. Write a summary of at most two sentences about what the connected data covers and how it connects. For each entity id write one short sentence of at most 90 characters saying what a record is and which systems it combines. For each link id give a short lowercase verb phrase of two to four words that reads naturally as '<from> <name> <to>'. Use only the supplied entities, links and notes.",
+      // An imported catalog defines entities authoritatively: catalogued
+      // entities keep their definitions (no LLM), curated links keep their
+      // names, and the model only fills gaps. Local models cannot return one
+      // giant structured reply for hundreds of entities, so gaps are described
+      // in batches of 40.
+      let catalogDefs = new Map<string, string>();
+      try {
+        const stored = await store.get(scope, "catalog");
+        if (stored) {
+          const parsed = CatalogSchema.safeParse(stored.data);
+          if (parsed.success) {
+            const index = indexCatalog(parsed.data);
+            const anchorTable = (id: string) => {
+              const e = s.entities.find((x) => x.id === id);
+              const ds = datasets.find((d) => d.id === e?.anchorDatasetId);
+              return ds ? (index.get(normTable(ds.name)) || index.get(normTable(e?.name || ""))) : undefined;
+            };
+            for (const e of s.entities) {
+              const def = anchorTable(e.id)?.definition?.trim();
+              if (def) catalogDefs.set(e.id, def);
+            }
+          }
+        }
+      } catch {
+        catalogDefs = new Map();
+      }
+      const gapIds = new Set(
+        s.entities.filter((e) => !catalogDefs.has(e.id)).map((e) => e.id),
       );
+      const gapEntities = (context.ontology!.entities as any[]).filter((e) =>
+        gapIds.has(e.id),
+      );
+      const cataloguedContext = (context.ontology!.entities as any[])
+        .filter((e) => !gapIds.has(e.id))
+        .map((e) => ({
+          id: e.id,
+          name: e.name,
+          definition: catalogDefs.get(e.id),
+        }));
+      const curatedIds = new Set(
+        s.links.filter((l) => l.id.startsWith("catalog-")).map((l) => l.id),
+      );
+      const gapLinks = (context.ontology!.links as any[]).filter(
+        (l) => !curatedIds.has(l.id),
+      );
+      const prompt =
+        "Describe the suggested ontology for a business user. Its structure is fixed: never add, remove, merge or rename entities or links. Write a summary of at most two sentences about what the connected data covers and how it connects. For each entity id write one short sentence of at most 90 characters saying what a record is and which systems it combines. For each link id give a short lowercase verb phrase of two to four words that reads naturally as '<from> <name> <to>'. Use only the supplied entities, links and notes.";
+      let text: {
+        summary: string;
+        entities: { id: string; description: string }[];
+        links: { id: string; name: string }[];
+      };
+      if (!gapEntities.length && !gapLinks.length) {
+        // Fully catalogued: no model call at all.
+        const cat = (await store.get(scope, "catalog"))?.data as any;
+        text = {
+          summary: `${cat?.name || "The catalog"} covers ${s.entities.length} entities${s.links.length ? ` connected by ${s.links.length} curated links` : ""}.`,
+          entities: [],
+          links: [],
+        };
+      } else {
+        const merged: typeof text = { summary: "", entities: [], links: [] };
+        const fullEntities = context.ontology!.entities,
+          fullLinks = context.ontology!.links;
+        for (let i = 0; i < gapEntities.length; i += 40) {
+          const first = i === 0;
+          // Scope the ambient ask() context per batch (first carries summary
+          // context; later batches only their slice).
+          (context.ontology as any).entities = first
+            ? [...gapEntities.slice(i, i + 40), ...cataloguedContext]
+            : gapEntities.slice(i, i + 40);
+          (context.ontology as any).links = first ? gapLinks : [];
+          const chunk = await ask(
+            "describe_ontology",
+            first
+              ? z.object({
+                  summary: z.string(),
+                  entities: z.array(
+                    z.object({ id: z.string(), description: z.string() }),
+                  ),
+                  links: z.array(
+                    z.object({ id: z.string(), name: z.string() }),
+                  ),
+                })
+              : z.object({
+                  entities: z.array(
+                    z.object({ id: z.string(), description: z.string() }),
+                  ),
+                }),
+            prompt,
+          );
+          if (first) {
+            merged.summary = (chunk as any).summary;
+            merged.links = (chunk as any).links || [];
+          }
+          merged.entities.push(...(chunk as any).entities);
+        }
+        (context.ontology as any).entities = fullEntities;
+        (context.ontology as any).links = fullLinks;
+        text = merged;
+      }
       const clip = (v: string, n: number) =>
         v.replace(/\s+/g, " ").trim().slice(0, n);
       // Only text is taken from the model, and only while the suggestion is unchanged.
@@ -1077,9 +1169,13 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
           current = m.ontologySuggestion;
         if (current?.signature !== s.signature || current.hash !== s.hash)
           return false;
-        const descriptions = new Map(
-          text.entities.map((e) => [e.id, clip(e.description, 400)]),
-        );
+        // Catalogued entities keep their authoritative definitions; the model
+        // only supplied the gaps.
+        const descriptions = new Map<string, string>();
+        for (const [id, def] of catalogDefs)
+          descriptions.set(id, clip(def, 400));
+        for (const e of text.entities)
+          descriptions.set(e.id, clip(e.description, 400));
         const names = new Map(
           text.links.map((l) => [
             l.id,

@@ -40,6 +40,7 @@ import { registerPipelinesRoutes } from "./routes/pipelines.js";
 import { recordLabel, registerOntologyRoutes } from "./routes/ontology.js";
 import { registerAnalystRoutes } from "./routes/analyst.js";
 import { registerWorkspaceRoutes } from "./routes/workspace.js";
+import { registerCatalogRoutes } from "./routes/catalog.js";
 // Helix Foundry runs on one computer for one person, with no sign-in. That
 // person is the installation's owner; their session never expires because
 // provider sign-in (hosting.ts) is bound to a session.
@@ -516,5 +517,6 @@ export async function createApp(store: Store) {
   registerOntologyRoutes(app, store, deps);
   registerAnalystRoutes(app, store, deps);
   registerWorkspaceRoutes(app, store, deps);
+  registerCatalogRoutes(app, store, deps);
   return app;
 }
