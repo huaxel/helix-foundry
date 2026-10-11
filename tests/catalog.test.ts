@@ -48,6 +48,8 @@ const catalog = {
       definition: "A free-text note.",
       keys: [["body"]],
     },
+    // No businessName: the name derives deterministically from the definition.
+    { table: "CODETBL", definition: "Code table: Widget type", keys: [["CODE"]] },
   ],
   joins: [
     {
@@ -84,6 +86,10 @@ async function suggestWithCatalog(withCatalog: boolean) {
     { body: "hello", tag: "b" },
     { body: "world", tag: "a" },
   ]);
+  await ingestRows(store, s, "CODETBL", [
+    { CODE: "W1", label: "one" },
+    { CODE: "W2", label: "two" },
+  ]);
   if (withCatalog)
     await transaction(store, s, async (tx) =>
       tx.put(resource(s, "catalog", "Test catalog", catalog, "catalog")),
@@ -107,6 +113,7 @@ it("names entities from catalog business terms and links curated joins", async (
     "Customer",
     "Note",
     "Order",
+    "Widget type",
   ]);
   const curated = suggestion.links.filter((l) =>
     l.id.startsWith("catalog-"),
@@ -211,10 +218,10 @@ it("imports, fetches and replaces a general catalog", async () => {
   expect(bad.statusCode).toBe(400);
   const first = await request("POST", "/catalog/import", { catalog });
   expect(first.statusCode, first.body).toBe(200);
-  expect(first.json()).toEqual({ tables: 3, joins: 1, domains: 0 });
+  expect(first.json()).toEqual({ tables: 4, joins: 1, domains: 0 });
   const fetched = await request("GET", "/catalog", undefined);
   expect(fetched.json()).toMatchObject({ name: "Test catalog", version: 1 });
-  expect(fetched.json().tables).toHaveLength(3);
+  expect(fetched.json().tables).toHaveLength(4);
   const again = await request("POST", "/catalog/import", {
     catalog: { ...catalog, tables: catalog.tables.slice(0, 1) },
   });

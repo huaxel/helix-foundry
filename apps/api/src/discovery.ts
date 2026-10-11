@@ -802,7 +802,11 @@ export async function suggestOntology(
   for (const d of drafts) {
     // An imported catalog names entities; the existing dedupe still applies.
     const catalogued = [d.anchor, ...d.members.map((m) => infos.find((x) => x.d.id === m.datasetId)!)].find(
-      (x) => x && (catalogFor(x.d.name) || catalogFor(x.table))?.businessName,
+      (x) =>
+        x &&
+        derivedBusinessName(
+          catalogFor(x.d.name) || catalogFor(x.table) || { table: "" },
+        ),
     );
     const business = catalogued
       ? derivedBusinessName(
