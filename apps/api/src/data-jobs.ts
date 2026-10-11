@@ -104,6 +104,13 @@ export async function syncLocalSources(store: Store): Promise<number> {
           .filter((s) => s.data.kind === "local")
           .map((s) => s.name),
       );
+      // Bulk auto-imports stay out of setup gating; the user explicitly
+      // includes the ones they want, and only those block Continue.
+      const ws = await tx.get("workspace");
+      const excluded = new Set<string>(
+        (ws?.data?.onboarding?.excludedIds || []) as string[],
+      );
+      let excludedChanged = false;
       for (const filepath of missing) {
         if (current.has(filepath)) continue;
         const source = tx.put(
@@ -116,7 +123,7 @@ export async function syncLocalSources(store: Store): Promise<number> {
             ...sourceSyncDefaults("local", null),
           }),
         );
-        tx.put(
+        const job = tx.put(
           resource(scope, "job", source.name, {
             type: "sync",
             sourceId: source.id,
@@ -126,6 +133,20 @@ export async function syncLocalSources(store: Store): Promise<number> {
         );
         current.add(filepath);
         created++;
+        if (!excluded.has(source.id) || !excluded.has(job.id)) {
+          excluded.add(source.id);
+          excluded.add(job.id);
+          excludedChanged = true;
+        }
+      }
+      if (excludedChanged && ws) {
+        tx.update(ws, {
+          ...ws.data,
+          onboarding: {
+            ...(ws.data.onboarding || {}),
+            excludedIds: [...excluded],
+          },
+        });
       }
     });
   }

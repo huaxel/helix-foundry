@@ -77,3 +77,20 @@ it("returns zero when the mount is missing", async () => {
   expect(await syncLocalSources(store)).toBe(0);
   expect(await store.list("ws", "source")).toHaveLength(0);
 });
+
+it("pre-excludes new auto-imports from setup gating", async () => {
+  const store = new MemoryStore();
+  await workspace(store);
+  await transaction(store, "ws", async (tx) => {
+    tx.put(resource("ws", "workspace", "Test", {}, "workspace"));
+  });
+
+  expect(await syncLocalSources(store)).toBe(2);
+
+  const ws = await store.get("ws", "workspace");
+  const excluded: string[] = ws?.data?.onboarding?.excludedIds || [];
+  const sources = await store.list("ws", "source");
+  const jobs = await store.list("ws", "job");
+  for (const s of sources) expect(excluded).toContain(s.id);
+  for (const j of jobs) expect(excluded).toContain(j.id);
+});
