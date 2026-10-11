@@ -30,7 +30,13 @@ async function main() {
       .filter(
         (d) =>
           (d.data.sourceId && autoSourceIds.has(d.data.sourceId)) ||
-          (d.data.importJobId && jobIdSet.has(d.data.importJobId)),
+          (d.data.importJobId && jobIdSet.has(d.data.importJobId)) ||
+          // Sourceless bulk from a one-time mount index (no source/job, local_
+          // prefix). User uploads (UUIDs) and samples are untouched.
+          (!d.data.sourceId &&
+            !d.data.importJobId &&
+            !d.data.sampleSource &&
+            d.id.startsWith("local_")),
       )
       .map((d) => d.id);
     const toExclude = [
