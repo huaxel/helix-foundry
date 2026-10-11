@@ -421,7 +421,10 @@ export async function suggestOntology(
   // links rather than failing the whole request.
   progress("matching");
   let rows: Awaited<ReturnType<typeof overlap>> = [];
-  if (cols.length > 1) {
+  // Curated joins replace statistical matching (which finds nothing at this
+  // scale but costs minutes); the overlap only runs without a catalog.
+  const curatedLinks = catalog?.joins.length || 0;
+  if (cols.length > 1 && !curatedLinks) {
     try {
       rows = await overlap(store, scope, cols, declaredPairs);
     } catch (error) {
