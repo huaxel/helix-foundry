@@ -9,7 +9,12 @@ import {
   type SuggestedOntology,
 } from "../../../packages/shared/src/index.js";
 import { pipelineId, queryDatasets } from "./datasets.js";
-import { indexCatalog, normTable, resolveColumn } from "./catalog-match.js";
+import {
+  derivedBusinessName,
+  indexCatalog,
+  normTable,
+  resolveColumn,
+} from "./catalog-match.js";
 import { CatalogSchema, type Catalog } from "../../../packages/shared/src/index.js";
 import { assert, digest } from "./security.js";
 import type { Store } from "./store.js";
@@ -800,8 +805,9 @@ export async function suggestOntology(
       (x) => x && (catalogFor(x.d.name) || catalogFor(x.table))?.businessName,
     );
     const business = catalogued
-      ? (catalogFor(catalogued.d.name) || catalogFor(catalogued.table))!
-          .businessName!.trim()
+      ? derivedBusinessName(
+          (catalogFor(catalogued.d.name) || catalogFor(catalogued.table))!,
+        )
       : "";
     let name = business || entityName(d.anchor.table);
     if (names.has(name.toLowerCase()))

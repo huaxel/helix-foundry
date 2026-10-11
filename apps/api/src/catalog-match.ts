@@ -57,6 +57,20 @@ export function unionTableColumns(
   }
   return new Map([...map].map(([k, v]) => [k, [...v.values()]]));
 }
+// Deterministic business names from authoritative definitions (strict patterns
+// only; explicit businessName always wins and anything ambiguous keeps its
+// slug for a human to name). No LLM, no guessing.
+export function derivedBusinessName(entry: CatalogTable): string {
+  if (entry.businessName?.trim()) return entry.businessName.trim();
+  const def = (entry.definition || "").trim();
+  const m =
+    /^(?:reference table|code table|code):\s*([^—–()\[\]]{2,48})$/i.exec(def);
+  if (!m) return "";
+  const phrase = m[1].trim().replace(/\s+/g, " ");
+  if (!phrase || /[.]{2,}|\b(?:table|code)\b.*\b(?:table|code)\b/i.test(phrase))
+    return "";
+  return phrase.charAt(0).toUpperCase() + phrase.slice(1);
+}
 export function indexCatalog(catalog: Catalog): Map<string, CatalogTable> {
   const map = new Map<string, CatalogTable>();
   for (const t of catalog.tables) {

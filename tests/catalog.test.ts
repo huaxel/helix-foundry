@@ -11,6 +11,7 @@ import { ingestRows } from "../apps/api/src/datasets.js";
 import { onboardingState } from "../apps/api/src/onboarding-state.js";
 import { suggestOntology } from "../apps/api/src/discovery.js";
 import {
+  derivedBusinessName,
   normTable,
   resolveColumn,
   unionTableColumns,
@@ -149,6 +150,18 @@ it("resolves exact, suffix, and label-qualified key columns", () => {
   expect(resolveColumn(cols, "FBNUM")).toBeUndefined();
   expect(normTable("stg_pers/ZST_PERSON.parquet")).toBe("ZST_PERSON");
   expect(normTable("TAX_GENERAL.DFMCA_RETURN")).toBe("DFMCA_RETURN");
+});
+
+it("derives business names only from strict definition patterns", () => {
+  const t = (definition?: string, businessName?: string) =>
+    derivedBusinessName({ table: "X", definition, businessName } as any);
+  expect(t("Reference table: Conflict type")).toBe("Conflict type");
+  expect(t("Code table: Address type")).toBe("Address type");
+  expect(t("Code: status codes")).toBe("Status codes");
+  expect(t("Universal journal entry")).toBe("");
+  expect(t("Reference table: Conflict type (legacy)")).toBe("");
+  expect(t("")).toBe("");
+  expect(t("Code table: Address type", "Addresses")).toBe("Addresses");
 });
 
 it("unions columns across same-name extract variants", () => {
