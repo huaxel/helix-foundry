@@ -1,5 +1,5 @@
-import "/app/apps/api/src/config.js";
-import { store, transaction } from "/app/apps/api/src/store.js";
+import "../apps/api/src/config.js";
+import { store, transaction } from "../apps/api/src/store.js";
 
 // One-time: exclude sourceless datasets that duplicate a source-linked twin
 // (same normalized file path). Sourceless-only files (no twin) are kept.

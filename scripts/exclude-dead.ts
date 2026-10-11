@@ -1,5 +1,5 @@
-import "/app/apps/api/src/config.js";
-import { store, transaction } from "/app/apps/api/src/store.js";
+import "../apps/api/src/config.js";
+import { store, transaction } from "../apps/api/src/store.js";
 
 // One-time: exclude permanently-empty datasets (no records and no live import)
 // on Atom so 25 dead files stop gating the full root. Dry-run default.

@@ -1,5 +1,5 @@
-import "/app/apps/api/src/config.js";
-import { store, transaction } from "/app/apps/api/src/store.js";
+import "../apps/api/src/config.js";
+import { store, transaction } from "../apps/api/src/store.js";
 
 // One-time repair: re-include specific datasets (+source/job) by ID.
 const ids = (process.env.INCLUDE_IDS || "").split(",").filter(Boolean);
