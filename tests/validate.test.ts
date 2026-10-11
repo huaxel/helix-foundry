@@ -1,7 +1,11 @@
 import { it, expect, vi } from "vitest";
+const gate = vi.hoisted(() => ({ calls: 0, perCall: [[{ k: 0 }]] as any[][] }));
 vi.mock("../apps/api/src/datasets.js", () => ({
   datasetTable: (id: string) => `t_${id}`,
-  queryDatasets: async () => ({ rows: [{ k: 0 }], profile: { rows: 1 } }),
+  queryDatasets: async () => ({
+    rows: gate.perCall[Math.min(gate.calls++, gate.perCall.length - 1)],
+    profile: { rows: 1 },
+  }),
 }));
 import { MemoryStore, resource, transaction } from "../apps/api/src/store.js";
 import { runValidateJob } from "../apps/api/src/validate-job.js";
@@ -88,6 +92,39 @@ it("flags sampled-miss links without touching verified ones or the hash", async 
     (await store.get(scope, "workspace"))?.data.onboarding.ontologySuggestion
       .notes,
   ).toHaveLength(1);
+});
+
+it("batches large link sets and offsets per-batch indexes", async () => {
+  await setup();
+  await transaction(store, scope, async (tx) => {
+    const w = (await tx.get("workspace"))!;
+    const base = suggestion();
+    const links = Array.from({ length: 25 }, (_, i) => ({
+      ...base.links[0],
+      id: `catalog-link-${i}`,
+    }));
+    tx.update(w, {
+      ...w.data,
+      onboarding: { ontologySuggestion: { ...base, links, notes: [] } },
+    });
+    tx.put(job("sig"));
+  });
+  gate.calls = 0;
+  gate.perCall = [[{ k: 0 }], [{ k: 0 }]];
+  const stored0 = (await store.get(scope, "workspace"))?.data.onboarding
+    .ontologySuggestion;
+  const j = (await store.list(scope, "job")).find(
+    (x) => x.data.type === "validate",
+  )!;
+  const out = (await runValidateJob(store, scope, j)) as any;
+  // Two batches (20 + 5); per-batch k:0 means global 0 and global 20.
+  expect(gate.calls).toBe(2);
+  expect(out).toEqual({ checked: 25, suspect: 23 });
+  const notes = (await store.get(scope, "workspace"))?.data.onboarding
+    .ontologySuggestion.notes;
+  expect(notes).toHaveLength(23);
+  expect(notes.some((n: any) => n.links[0] === "catalog-link-20")).toBe(false);
+  expect(stored0.notes).toEqual([]);
 });
 
 it("does nothing for stale signatures or link-free suggestions", async () => {
