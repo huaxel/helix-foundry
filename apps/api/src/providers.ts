@@ -32,7 +32,9 @@ export class Provider implements ModelProvider {
         model: s.model,
         stream: false,
         temperature: 0,
-        max_tokens: 3072,
+        // Reasoning models think before answering; a small budget returns
+        // an empty message with the thinking split off. Room for both.
+        max_tokens: 8192,
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
