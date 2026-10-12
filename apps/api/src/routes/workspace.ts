@@ -70,6 +70,87 @@ const slim = (r: Resource) => ({
   },
 });
 const DAY = 86400000;
+// Targeted jobs fetch for Home: exact newest-per-key for health reporting
+// without scanning unbounded history. Loops newest-first until every source
+// and pipeline has a job, an upload is seen (or history is exhausted), and a
+// floor is reached for the activity preview; active items come from the
+// status index so running counts are exact. Exhaustive fallback preserves
+// full-scan output when coverage is impossible.
+async function homeJobs(
+  store: Store,
+  scope: string,
+  sourceIds: Set<string>,
+  pipelineIds: Set<string>,
+  floor = 300,
+) {
+  const [{ items: active }] = await Promise.all([
+    store.listPage(scope, "job", { status: ["queued", "running"] }),
+  ]);
+  const seen = new Map<string, Resource>(),
+    seenSources = new Set<string>(),
+    seenPipelines = new Set<string>();
+  let seenUpload = false;
+  const absorb = (items: Resource[]) => {
+    for (const j of items) {
+      if (seen.has(j.id)) continue;
+      seen.set(j.id, j);
+      if (j.data.sourceId) seenSources.add(j.data.sourceId);
+      if (j.data.type === "pipeline" && j.data.pipelineId)
+        seenPipelines.add(j.data.pipelineId);
+      if (j.data.type === "upload") seenUpload = true;
+    }
+  };
+  absorb(active);
+  let offset = 0;
+  for (;;) {
+    const covered =
+      [...sourceIds].every((id) => seenSources.has(id)) &&
+      [...pipelineIds].every((id) => seenPipelines.has(id)) &&
+      seenUpload;
+    if (covered && seen.size >= floor) break;
+    const { items } = await store.listPage(scope, "job", {
+      order: { prop: "updatedAt", dir: "desc" },
+      offset,
+      limit: 100,
+    });
+    if (!items.length) break;
+    absorb(items);
+    offset += items.length;
+  }
+  return [...seen.values()];
+}
+// Newest-first window for activity previews (runs/audits feed only the
+// 12-item home/activity lists). The folded set is exact; repeat counts may
+// undercount in pathological histories.
+// Newest-first scan stopping at the cutoff. Correct (the order guarantees
+// everything after the cutoff is older) and bounded by the recent prefix
+// instead of the full unbounded history.
+async function recentSince(
+  store: Store,
+  scope: string,
+  kind: string,
+  since: string,
+) {
+  const out: Resource[] = [];
+  let offset = 0;
+  for (;;) {
+    const { items } = await store.listPage(scope, kind, {
+      order: { prop: "updatedAt", dir: "desc" },
+      offset,
+      limit: 100,
+    });
+    if (!items.length) break;
+    const fresh = items.filter((r) => r.updatedAt >= since);
+    out.push(...fresh);
+    if (fresh.length < items.length) break;
+    offset += items.length;
+  }
+  return out;
+}
+function unionById(a: Resource[], b: Resource[]) {
+  const seen = new Set(a.map((r) => r.id));
+  return [...a, ...b.filter((r) => !seen.has(r.id))];
+}
 
 // Workspace essentials: home, overview, live events, reviews and publication,
 // AI provider, API tokens and definitions.
@@ -98,27 +179,21 @@ export function registerWorkspaceRoutes(
     const [
       datasets,
       sources,
-      jobs,
-      runs,
       proposals,
       findings,
       dashboards,
       pipelines,
       objectTypes,
-      audits,
       publications,
     ] = await Promise.all(
       [
         "dataset",
         "source",
-        "job",
-        "run",
         "proposal",
         "finding",
         "dashboard",
         "pipeline",
         "objectType",
-        "audit",
         "publication",
       ].map((k) => store.list(a.scope, k)),
     );
@@ -134,6 +209,28 @@ export function registerWorkspaceRoutes(
           !excluded.includes(d.id) &&
           !excluded.includes(d.data.sourceId),
       );
+    // Unbounded histories via targeted fetches (see homeJobs): exact health
+    // inputs plus a generous window for the 12-item activity preview.
+    const [jobs, runs, audits] = await Promise.all([
+      homeJobs(
+        store,
+        a.scope,
+        new Set(kept.map((s) => s.id)),
+        new Set(pipelines.filter(live).map((p) => p.id)),
+      ),
+      store
+        .listPage(a.scope, "run", {
+          order: { prop: "updatedAt", dir: "desc" },
+          limit: 300,
+        })
+        .then((r) => r.items),
+      store
+        .listPage(a.scope, "audit", {
+          order: { prop: "updatedAt", dir: "desc" },
+          limit: 300,
+        })
+        .then((r) => r.items),
+    ]);
     const latest = new Map<string, Resource>();
     for (const j of [...jobs].sort(newest))
       if (j.data.sourceId && !latest.has(j.data.sourceId))
@@ -448,15 +545,27 @@ export function registerWorkspaceRoutes(
       try {
         await access(req);
         const since = new Date(Date.now() - DAY).toISOString();
-        const recent = (r: Resource) =>
-          ["queued", "running"].includes(r.data.status) || r.updatedAt >= since;
-        const [runs, jobs, proposals] = await Promise.all(
-          ["run", "job", "proposal"].map((k) => store.list(a.scope, k)),
-        );
+        // Targeted live queries instead of full scans: active items via the
+        // status index, recently-updated via a newest-first scan that stops
+        // at the cutoff, and ready reviews via the status index. The union
+        // reproduces filter(active OR updated>=since) exactly.
+        const [
+          { items: activeRuns },
+          { items: activeJobs },
+          { items: readyProposals },
+          recentRuns,
+          recentJobs,
+        ] = await Promise.all([
+          store.listPage(a.scope, "run", { status: ["queued", "running"] }),
+          store.listPage(a.scope, "job", { status: ["queued", "running"] }),
+          store.listPage(a.scope, "proposal", { status: "ready" }),
+          recentSince(store, a.scope, "run", since),
+          recentSince(store, a.scope, "job", since),
+        ]);
         const payload = JSON.stringify({
-          runs: runs.filter(recent).map((r) => slim(scrub(r))),
-          jobs: jobs.filter(recent).map((r) => slim(scrub(r))),
-          reviews: proposals.filter((p) => p.data.status === "ready").length,
+          runs: unionById(activeRuns, recentRuns).map((r) => slim(scrub(r))),
+          jobs: unionById(activeJobs, recentJobs).map((r) => slim(scrub(r))),
+          reviews: readyProposals.length,
         });
         if (payload !== last) {
           last = payload;

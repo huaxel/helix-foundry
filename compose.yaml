@@ -43,10 +43,9 @@ services:
       PLANETSCALE_CLIENT_SECRET: ${PLANETSCALE_CLIENT_SECRET:-}
     ports:
       - "127.0.0.1:${PUBLIC_PORT:-3001}:3001"
-      # Tailnet access for password-protected deployments. TAILSCALE_IP is
-      # this machine's Tailscale IP; requires AUTH_PASSWORD and a matching
-      # PUBLIC_ORIGIN. The app refuses non-loopback origins without a password.
-      - "${TAILSCALE_IP:-100.81.226.52}:${PUBLIC_PORT:-3001}:3001"
+      # Tailnet access is opt-in: see compose.tailnet.yaml. That overlay adds
+      # the Tailscale IP binding and must only be used with AUTH_PASSWORD set
+      # and a matching PUBLIC_ORIGIN (the app refuses otherwise).
     healthcheck:
       test:
         [
@@ -62,10 +61,10 @@ services:
     <<: *app
     mem_limit: 768m
     cpus: 0.5
-    command: ["node", "--import", "tsx", "apps/api/src/worker.ts"]
+    command: ["node", "dist/apps/api/src/worker.js"]
   executor:
     <<: *app
-    command: ["node", "--import", "tsx", "services/executor/src/server.ts"]
+    command: ["node", "dist/services/executor/src/server.js"]
     environment:
       INTERNAL_KEY: ${INTERNAL_KEY:?Run scripts/setup.sh first}
       DATA_DIR: /data

@@ -5,7 +5,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages ./packages
 RUN pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm build
+RUN pnpm build && pnpm build:server
 FROM node:24-bookworm-slim
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.7.0 --activate
@@ -14,4 +14,4 @@ RUN mkdir -p /data && chown node:node /data
 USER node
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3001 DATA_DIR=/data
 EXPOSE 3001
-CMD ["node","--import","tsx","apps/api/src/server.ts"]
+CMD ["node","dist/apps/api/src/server.js"]

@@ -1,7 +1,7 @@
 import { registerOnboarding } from "./onboarding.js";
 import { registerHosting } from "./hosting.js";
 import { publicResource } from "./onboarding-state.js";
-import { effectiveObject } from "./context.js";
+import { effectiveObject, effectiveObjects } from "./context.js";
 import { openapiTransform } from "./openapi.js";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
@@ -373,6 +373,27 @@ export async function createApp(store: Store) {
   app.get("/api/v1/workspaces/:w/resources/:kind", async (req: any) => {
     const a = await access(req);
     assert(publicKinds.has(req.params.kind), "Resource type not found", 404);
+    const offset = Math.max(Number(req.query.offset) || 0, 0),
+      limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
+    // Fast path: plain newest-first pages without search or filters are served
+    // from a storage-level ordered slice instead of a full-collection scan.
+    // Object and dataset lists need overlays/snapshots, and generation kinds
+    // need an active-generation filter, so they keep the full-list path below.
+    if (
+      req.params.kind !== "object" &&
+      req.params.kind !== "dataset" &&
+      !generationKinds.has(req.params.kind) &&
+      !req.query.search &&
+      !req.query.type &&
+      !(req.query.field && req.query.value !== undefined)
+    ) {
+      const { items, total } = await store.listPage(a.scope, req.params.kind, {
+        order: { prop: "updatedAt", dir: "desc" },
+        offset,
+        limit,
+      });
+      return { items: items.map(scrub), total };
+    }
     const ws = await store.get(a.scope, "workspace");
     let rows = (await store.list(a.scope, req.params.kind)).filter(
       (r) =>
@@ -380,17 +401,19 @@ export async function createApp(store: Store) {
           !(r.kind === "dataset" && r.data.generation)) ||
         r.data.generation === ws?.data.activeGeneration,
     );
-    if (req.params.kind === "dataset")
-      rows = await Promise.all(
-        rows.map(async (r) => ({
-          ...r,
-          data: {
-            ...r.data,
-            snapshotAt: (await store.get(a.scope, r.data.activeVersion))
-              ?.createdAt,
-          },
-        })),
+    if (req.params.kind === "dataset") {
+      const snapshots = await store.getMany(
+        a.scope,
+        rows.map((r) => r.data.activeVersion).filter(Boolean),
       );
+      rows = rows.map((r) => ({
+        ...r,
+        data: {
+          ...r.data,
+          snapshotAt: snapshots.get(r.data.activeVersion)?.createdAt,
+        },
+      }));
+    }
     if (req.params.kind === "object") {
       // Records carry a readable name and how many records they link to.
       const links = new Map<string, number>();
@@ -398,19 +421,14 @@ export async function createApp(store: Store) {
         if (r.data.generation === ws?.data.activeGeneration)
           for (const end of [r.data.from, r.data.to])
             links.set(end, (links.get(end) || 0) + 1);
-      rows = await Promise.all(
-        rows.map(async (r) => {
-          const o = await effectiveObject(store, a.scope, r);
-          return {
-            ...o,
-            data: {
-              ...o.data,
-              label: recordLabel(o.name, o.data.type, o.data.effective),
-              links: links.get(o.id) || 0,
-            },
-          };
-        }),
-      );
+      rows = (await effectiveObjects(store, a.scope, rows)).map((o) => ({
+        ...o,
+        data: {
+          ...o.data,
+          label: recordLabel(o.name, o.data.type, o.data.effective),
+          links: links.get(o.id) || 0,
+        },
+      }));
     }
     if (req.query.search)
       rows = rows.filter((r) =>
@@ -429,9 +447,7 @@ export async function createApp(store: Store) {
             String(req.query.value),
       );
     }
-    const total = rows.length,
-      offset = Math.max(Number(req.query.offset) || 0, 0),
-      limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
+    const total = rows.length;
     // Records sort by name (?sort=record), a field, or their link count
     // (?sort=links), with ?dir=desc to reverse; empty values go last.
     const field = String(req.query.sort || ""),
@@ -495,6 +511,19 @@ export async function createApp(store: Store) {
   });
   const web = resolve("apps/web/dist");
   if (existsSync(web)) {
+    // Hashed /assets/ (immutable across deploys) cache aggressively so
+    // repeat visits skip re-download; the unhashed shell keeps defaults so
+    // upgrades apply. A second top-level registration would clash on the
+    // sendFile decorator, so the scoped assets registration is encapsulated.
+    if (existsSync(resolve(web, "assets")))
+      await app.register(async (assetsApp) => {
+        await assetsApp.register(staticFiles, {
+          root: resolve(web, "assets"),
+          prefix: "/assets/",
+          maxAge: 31536000000,
+          immutable: true,
+        });
+      });
     await app.register(staticFiles, { root: web });
     app.setNotFoundHandler((req, reply) =>
       req.url.startsWith("/api/")

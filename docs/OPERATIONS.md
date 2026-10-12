@@ -8,7 +8,7 @@ Keep `.env`, data volumes, and backups private. The application encrypts connect
 
 ## Diagnostics and schema migration
 
-`pnpm doctor` checks the database, executor, model endpoint, and local secrets. `/api/health` is a process health check. Startup applies the indexed version-1 metadata schema idempotently; `node --import tsx scripts/migrate.ts` applies it explicitly. Startup rejects database schema versions newer than the application.
+`pnpm doctor` checks the database, executor, model endpoint, and local secrets. `/api/health` is a process health check. Startup applies the indexed version-1 metadata schema idempotently; `node dist/scripts/migrate.js` applies it explicitly. Startup rejects database schema versions newer than the application.
 
 Jobs claim leases and periodically renew them. A worker restart reclaims expired leases. AI stages save definitions and usage after each completed stage; a failed/canceled run can be resumed through Activity or the API. Input changes invalidate cached stages. Failed connector/pipeline jobs retry three times with bounded backoff. A stopped worker does not stop published dashboard queries.
 

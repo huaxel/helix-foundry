@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { assert, digest } from "../security.js";
 import { resource, transaction, type Store } from "../store.js";
-import { effectiveObject } from "../context.js";
+import { effectiveObject, effectiveObjects } from "../context.js";
 import {
   ObjectActionSchema,
   previewObjectAction,
@@ -71,9 +71,9 @@ export function registerOntologyRoutes(
     );
     const record = await effectiveObject(store, a.scope, r);
     const neighbors = await store.neighbors(a.scope, r.id);
-    const related = (
-      await Promise.all(neighbors.map((x) => store.get(a.scope, x)))
-    ).filter(
+    const related = [
+      ...(await store.getMany(a.scope, neighbors)).values(),
+    ].filter(
       (x) =>
         x?.kind === "object" && x.data.generation === ws?.data.activeGeneration,
     );
@@ -90,9 +90,7 @@ export function registerOntologyRoutes(
         )
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
         .slice(0, 30),
-      related: await Promise.all(
-        related.map((x) => effectiveObject(store, a.scope, x)),
-      ),
+      related: await effectiveObjects(store, a.scope, related),
     };
   });
   app.get("/api/v1/workspaces/:w/objects/:id/neighbors", async (req: any) => {

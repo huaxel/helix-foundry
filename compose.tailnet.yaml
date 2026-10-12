@@ -1,0 +1,17 @@
+# Opt-in overlay that publishes the app on this machine's Tailscale IP.
+#
+# Tailnet access is fail-closed on two levels: this file is not part of the
+# default `docker compose up`, and the app refuses to serve a non-loopback
+# origin without AUTH_PASSWORD (see apps/api/src/config.ts requireSecrets).
+# Use it only with AUTH_PASSWORD set and PUBLIC_ORIGIN equal to the URL you
+# open on the tailnet, for example:
+#
+#   AUTH_PASSWORD=<strong password>
+#   PUBLIC_ORIGIN=http://<tailscale-ip>:3001
+#   TAILSCALE_IP=<this machine's Tailscale IP>
+#
+#   docker compose -f compose.yaml -f compose.tailnet.yaml up -d --build
+services:
+  app:
+    ports:
+      - "${TAILSCALE_IP:?Set TAILSCALE_IP in .env for tailnet access}:${PUBLIC_PORT:-3001}:3001"

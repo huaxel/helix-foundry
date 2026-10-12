@@ -154,9 +154,9 @@ Open **http://localhost:5173**. `pnpm dev` runs the API on 3001, the executor on
 
 ## Security model
 
-This fork serves one owner over their Tailscale network with password sign-in (see `AGENTS.md` for the full architecture). Set `AUTH_PASSWORD`, `PUBLIC_ORIGIN`, and `TAILSCALE_IP` in `.env`; the app refuses non-loopback origins without a password.
+This fork serves one owner over their Tailscale network with password sign-in (see `AGENTS.md` for the full architecture). Set `AUTH_PASSWORD`, `PUBLIC_ORIGIN`, and `TAILSCALE_IP` in `.env`; the app refuses non-loopback origins without a password. Tailnet exposure is opt-in: `docker compose up` publishes loopback only, and the Tailscale IP binding lives in `compose.tailnet.yaml` (`docker compose -f compose.yaml -f compose.tailnet.yaml up -d`, or `./scripts/setup.sh --compose`).
 
-- The app is published on `127.0.0.1` (healthchecks, local use) and on this machine's Tailscale IP only. Never expose it beyond the tailnet: no public internet, no LAN/WiFi, no reverse proxy or tunnel outward, and never publish the internal HelixDB or executor ports.
+- The app is published on `127.0.0.1` (healthchecks, local use) and, only when the tailnet overlay is used, on this machine's Tailscale IP. Never expose it beyond the tailnet: no public internet, no LAN/WiFi, no reverse proxy or tunnel outward, and never publish the internal HelixDB or executor ports.
 - Every `/api/*` route requires a password session (browser cookie) or a workspace Bearer token, except `/api/health` and `/api/auth/*`. The predictable local-session id is never accepted via cookie. Login is rate-limited.
 - The API rejects requests whose `Host` is not the configured origin's host, and browser changes from any other origin, with `403`.
 - Connector and AI credentials are encrypted with `ENCRYPTION_KEY` from `.env`. Keep `.env` and backups private and out of git. If you lose the key, stored credentials cannot be recovered. Do not try to rotate it by replacing the value.

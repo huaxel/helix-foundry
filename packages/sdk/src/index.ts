@@ -68,9 +68,16 @@ export class FoundryClient {
   }
   private base: string;
   private headers: Record<string, string>;
-  constructor(
-    private options: { baseUrl: string; workspaceId: string; token: string },
-  ) {
+  private timeoutMs: number;
+  constructor(private options: {
+    baseUrl: string;
+    workspaceId: string;
+    token: string;
+    // Per-request timeout; long imports can take minutes, but a request
+    // must never hang forever on a wedged server. Defaults to 10 minutes.
+    timeoutMs?: number;
+  }) {
+    this.timeoutMs = options.timeoutMs ?? 600000;
     this.base =
       options.baseUrl.replace(/\/$/, "") +
       "/api/v1/workspaces/" +
@@ -85,11 +92,28 @@ export class FoundryClient {
     body?: unknown,
     method?: string,
   ): Promise<T> {
-    const r = await fetch(this.base + path, {
-      method: method || (body === undefined ? "GET" : "POST"),
-      headers: this.headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let r: Response;
+    try {
+      r = await fetch(this.base + path, {
+        method: method || (body === undefined ? "GET" : "POST"),
+        headers: this.headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (e) {
+      // Uniform contract: timeouts surface as FoundryError, not DOMException.
+      // Other network failures get status 0 (no HTTP status) to avoid
+      // mislabeling them as request timeouts.
+      const isTimeout = e instanceof Error && e.name === "TimeoutError";
+      throw new FoundryError(
+        isTimeout ? 408 : 0,
+        isTimeout
+          ? `Request timed out after ${this.timeoutMs}ms: ${method || (body === undefined ? "GET" : "POST")} ${path}`
+          : e instanceof Error
+            ? e.message
+            : "Request failed",
+      );
+    }
     const data = (await r.json()) as any;
     if (!r.ok) throw new FoundryError(r.status, data.error);
     return data;

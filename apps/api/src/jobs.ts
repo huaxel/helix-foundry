@@ -70,8 +70,13 @@ export function startWorker(store: Store) {
               });
             });
           }
-        const runs = await store.list(scope, "run"),
-          jobs = await store.list(scope, "job");
+        // Storage-level status filter: fetch only queued/running runs+jobs,
+        // not the full unbounded history. Pre-upgrade nodes carry the
+        // promoted status via the schema-v2 backfill in store.init().
+        const [{ items: runs }, { items: jobs }] = await Promise.all([
+          store.listPage(scope, "run", { status: ["queued", "running"] }),
+          store.listPage(scope, "job", { status: ["queued", "running"] }),
+        ]);
         const candidate = [...runs, ...jobs]
           .filter(
             (r) =>

@@ -6,6 +6,8 @@ node_modules
 coverage
 playwright-report
 test-results
+dist/
+.pi/
 apps/web/dist
 packages/*/dist
 *.tgz

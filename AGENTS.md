@@ -26,7 +26,7 @@ grep -E '^(AUTH_PASSWORD|PUBLIC_ORIGIN|PUBLIC_PORT|TAILSCALE_IP|MODEL_ENDPOINT)=
 
 - `AUTH_PASSWORD`: strong password (8+ chars, enforced at boot). Enables sign-in for browser and API; every `/api/*` route then requires a password session or a workspace Bearer token. Unset means loopback-owner mode (no sign-in).
 - `PUBLIC_ORIGIN`: the exact Tailscale URL users open, e.g. `http://100.81.226.52:3001`. Must match the browser URL exactly.
-- `TAILSCALE_IP`: this machine's Tailscale IP. Compose publishes the app on loopback (for healthchecks) and on this IP (for the tailnet), never on LAN.
+- `TAILSCALE_IP`: this machine's Tailscale IP. Tailnet access is opt-in: start with `docker compose -f compose.yaml -f compose.tailnet.yaml up -d` (or `./scripts/setup.sh --compose`, which adds the overlay automatically when both `AUTH_PASSWORD` and `TAILSCALE_IP` are set). The default `docker compose up` publishes loopback only, never LAN or the tailnet.
 - The app refuses to boot a non-loopback origin without `AUTH_PASSWORD`, and refuses weak passwords. This is fail-closed, not a warning.
 
 Verify after start (replace `<TAIL>` with the Tailscale IP or MagicDNS name):
@@ -265,7 +265,7 @@ docker compose --profile local logs --tail 100 app helix
 4. **Deeper check** from inside the app container (optional on paths A and C, required on path B). It checks HelixDB, the executor, the model endpoint and the key lengths:
 
    ```sh
-   docker compose exec app node --import tsx scripts/doctor.ts
+   docker compose exec app node dist/scripts/doctor.js
    ```
 
    Expect `✓ HelixDB available`, `✓ DuckDB executor available` and `✓ Local model available`. `✗ Local model` is expected on path C. On path B it means the container cannot reach native Ollama through `host.docker.internal`: tell the user, and offer to switch to path A by removing the `MODEL_ENDPOINT` line and running `docker compose --profile local up -d`. If the command itself cannot run, rely on checks 1 and 2.

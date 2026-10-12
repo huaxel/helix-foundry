@@ -134,7 +134,9 @@ If replication is unavailable, snapshots refresh every five minutes (or on an ex
 | Executor | Disposable DuckDB child processes, declared inputs, isolated SELECT execution |
 | HelixDB  | Workspace metadata, API tokens, jobs, proposals, ontology records and edges   |
 
-In Docker Compose, the worker runs as its own service. In development (`pnpm dev`), it runs inside the API process. Only the app publishes a port, on `127.0.0.1`. The executor sits alone on an internal network with no outside access.
+In Docker Compose, the worker runs as its own service. In development (`pnpm dev`), it runs inside the API process. Only the app publishes a port, on `127.0.0.1` by default (this fork adds an opt-in `compose.tailnet.yaml` overlay for Tailscale access; see `AGENTS.md`). The executor sits alone on an internal network with no outside access.
+
+The production image runs compiled JavaScript, not TypeScript source: `pnpm build:server` (`tsconfig.server.json`, NodeNext) emits `apps/api`, `services/executor`, `packages/shared` and `scripts` to `dist/`, and the app/worker/executor entrypoints run from there. `tsx` is a development-only runner (`pnpm dev`, `pnpm start`, tests). The API serves the built web UI from `apps/web/dist`, with year-long immutable caching for content-hashed `/assets/*` and fresh serving for the unhashed shell.
 
 Data lives in three Docker volumes:
 
@@ -144,6 +146,10 @@ Data lives in three Docker volumes:
 | `helix-foundry_foundry-data` | Parquet snapshots, artifacts and staged uploads                                    |
 
 **HelixDB.** Queries use the HelixDB TypeScript SDK 3.2 and `/v2/query`. A scope revision is compared and advanced inside each write batch, so stale metadata writes fail as a unit. Dataset artifacts and staged ontology generations stay invisible until the publication pointer changes. Source imports remain separate from manual object overlays.
+
+Schema v2 promotes `status` (mirroring `data.status`) and `updatedAt` to indexed top-level node properties on every write, with a one-time backfill on upgrade from v1. The store exposes `getMany` (single-batch reads, replacing per-row `get` loops in list paths) and `listPage` (storage-level status filtering, newest-first ordering with a deterministic key tie-break, and offset/limit slicing with totals). The worker claims queued/running runs and jobs through the status index instead of scanning full history; the live-events stream and Home use the same primitives plus recency-bounded scans. Plain newest-first resource pages are served from storage slices; filtered, searched, or custom-sorted lists keep the full-list path for exactness.
+
+The API is organized by area: route modules under `apps/api/src/routes/` own their endpoints, while `apps/api/src/assistant/` (context, provider, validate, proposals, build) and `apps/api/src/discovery/` (names, keys, suggest, columns, confirm, bundle) hold the assistant engine and ontology suggestion behind stable `assistant.js` / `discovery.js` facades.
 
 **Executor isolation.** The executor loads approved input snapshots, disables external access and extension installation, locks its configuration, and wraps generated SQL as a single SELECT. It has no connector or API credentials. One DuckDB job runs at a time with a 768 MB memory setting, a 2 GB temporary-spill limit and a 900-second timeout. In Compose the executor container is limited to 2 GB of memory and 128 processes, drops all Linux capabilities and cannot gain new privileges. Never expose its endpoint.
 

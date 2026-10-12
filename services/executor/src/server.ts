@@ -33,7 +33,7 @@ app.post("/execute", async (req, reply) => {
         [
           "--import",
           "tsx",
-          fileURLToPath(new URL("./runner.ts", import.meta.url)),
+          fileURLToPath(new URL("./runner.js", import.meta.url)),
         ],
         {
           env: {

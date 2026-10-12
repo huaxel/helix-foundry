@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "concurrently -k 'tsx watch services/executor/src/server.ts' 'tsx watch apps/api/src/server.ts' 'vite --host 127.0.0.1 apps/web'",
     "build": "pnpm build:sdk && tsc --noEmit && vite build apps/web",
+    "build:server": "tsc -p tsconfig.server.json",
     "typecheck": "pnpm build:sdk && tsc --noEmit",
     "test": "vitest run",
     "test:browser": "playwright test",
