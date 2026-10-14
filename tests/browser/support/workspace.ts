@@ -44,7 +44,21 @@ export async function sampleWorkspace(page: Page, name: string) {
       { timeout: 60000, intervals: [1000] },
     )
     .toBe(true);
-  const state = await api(page, base + "/onboarding/ontology", {});
+  // The suggestion computes in a background job: post to queue it, then poll
+  // like the UI does until it lands. Re-post while polling in case late
+  // sample imports shifted the data signature under a queued run (the stale
+  // run is discarded and the re-post queues a fresh one).
+  let state: any;
+  await expect
+    .poll(
+      async () => {
+        await api(page, base + "/onboarding/ontology", {});
+        state = await api(page, base + "/onboarding");
+        return !!state.ontology;
+      },
+      { timeout: 180000, intervals: [5000] },
+    )
+    .toBe(true);
   await api(page, base + "/onboarding/ontology/confirm", {
     hash: state.ontology.hash,
     excluded: [],

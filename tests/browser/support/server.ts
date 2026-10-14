@@ -6,6 +6,15 @@ process.env.DATA_DIR = dataDir;
 process.env.APP_ORIGIN = `http://localhost:${ports.web}`;
 process.env.EXECUTOR_URL = `http://127.0.0.1:${ports.executor}`;
 process.env.INTERNAL_KEY = "acceptance-executor-key-not-for-production";
+// config.ts loads the repo root .env via dotenv, which carries the real
+// install's AUTH_PASSWORD and LOCAL_DATA_PATH. Clear the password so the
+// acceptance stack stays in loopback-owner mode (no sign-in), like
+// NODE_ENV=test suites do, and point the lake at an empty dir so the
+// worker's local-source auto-import does not flood the test store with the
+// user's real Parquet files (each one churns the onboarding signature and
+// starves the suggest job forever).
+process.env.AUTH_PASSWORD ||= "";
+process.env.LOCAL_DATA_PATH ||= dataDir + "/lake";
 process.env.ENCRYPTION_KEY = "acceptance-encryption-key-not-for-production";
 process.env.OLLAMA_URL = `http://127.0.0.1:${ports.api}/fixture`;
 // Every spec shares one IP; polling helpers would exhaust the default budget.
@@ -18,6 +27,7 @@ const { referenceReply, orderRows } = await import(
 );
 await rm(process.env.DATA_DIR, { recursive: true, force: true });
 await mkdir(process.env.DATA_DIR, { recursive: true });
+await mkdir(process.env.LOCAL_DATA_PATH as string, { recursive: true });
 const store = new MemoryStore();
 const app = await createApp(store);
 app.get("/fixture/api/tags", async () => ({

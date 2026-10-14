@@ -426,7 +426,9 @@ test("complete resumable onboarding, full REST import, suggested ontology and au
   await page.getByRole("button", { name: "Upload files", exact: true }).click();
   await expect(
     page.getByText("Customers · 2 records", { exact: true }),
-  ).toBeVisible({ timeout: 30000 });
+    // The upload import waits behind the sample imports, suggest and
+    // describe jobs on the serial acceptance worker.
+  ).toBeVisible({ timeout: 180000 });
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "REST API", exact: true }).click();
   await page.getByLabel("Connection name").fill("Orders");
@@ -535,7 +537,7 @@ test("complete resumable onboarding, full REST import, suggested ontology and au
   ).toBeVisible({ timeout: 2000 });
   await expect(page.getByText("AI is still writing descriptions")).toHaveCount(
     0,
-    { timeout: 30000 },
+    { timeout: 180000 },
   );
   await Promise.all([
     page.waitForResponse((r) =>
