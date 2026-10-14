@@ -1,7 +1,7 @@
 // Pipeline Builder job handler (batch build), dispatched by the worker in jobs.ts.
 import type { Resource } from "../../../packages/shared/src/index.js";
 import { transaction, resource, type Store } from "./store.js";
-import { queryDatasets } from "./datasets.js";
+import { pruneVersions, queryDatasets } from "./datasets.js";
 
 export async function runPipelineJob(
   store: Store,
@@ -37,4 +37,5 @@ export async function runPipelineJob(
       });
     }
   });
+  await pruneVersions(store, scope, p.data.outputDatasetId);
 }

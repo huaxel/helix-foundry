@@ -225,7 +225,60 @@ export async function ingestFile(
   // The durable Parquet snapshot is committed; the staged source copy is no
   // longer needed. Failed imports retain it so queued uploads can be retried.
   if (!localSource && file) await removeStagedInput(scope, file);
+  await pruneVersions(store, scope, imported.id);
   return imported;
+}
+
+export const VERSION_RETENTION = 10;
+
+// Keep a dataset's version history bounded: drop version resources beyond the
+// retention window together with their on-disk Parquet files. Retained
+// versions hard-link shared partition files, so removing an old version's
+// directory only reclaims disk once no retained version references the same
+// inodes. activeVersion and pendingVersion are never dropped, even if they
+// fall outside the window.
+export async function pruneVersions(
+  store: Store,
+  scope: string,
+  datasetId: string,
+): Promise<void> {
+  await transaction(store, scope, async (tx) => {
+    const ds = await tx.get(datasetId);
+    if (!ds || ds.kind !== "dataset") return;
+    const versions: string[] = Array.isArray(ds.data.versions)
+      ? ds.data.versions
+      : [];
+    if (versions.length <= VERSION_RETENTION) return;
+    const keep = new Set(
+      [ds.data.activeVersion, ds.data.pendingVersion].filter(Boolean),
+    );
+    const kept = versions.slice(0, VERSION_RETENTION);
+    const dropped = versions
+      .slice(VERSION_RETENTION)
+      .filter((v) => !keep.has(v));
+    if (!dropped.length) return;
+    for (const v of dropped) {
+      const ver = await tx.get(v);
+      if (!ver || ver.kind !== "version") continue;
+      const files = [
+        ...((ver.data.partitions as { file: string }[] | undefined) ?? []).map(
+          (part) => part.file,
+        ),
+        ...(typeof ver.data.file === "string" ? [ver.data.file] : []),
+      ];
+      for (const f of files)
+        await rm(resolve(config.dataDir, "datasets", scope, f), {
+          force: true,
+        });
+      // Partitioned versions keep their files in a per-version directory.
+      await rm(resolve(config.dataDir, "datasets", scope, v), {
+        recursive: true,
+        force: true,
+      }).catch(() => {});
+      tx.delete(v);
+    }
+    tx.update(ds, { ...ds.data, versions: kept });
+  });
 }
 export async function ingestRows(
   store: Store,

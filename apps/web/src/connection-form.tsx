@@ -792,8 +792,8 @@ Content-Type: application/json
               <pre>{JSON.stringify(preview.columns, null, 2)}</pre>
             </details>
           )}
-          {discovered &&
-            ["local", "s3", "postgres", "mysql"].includes(kind) && (
+          {
+            discovered && (
               <label className="span2">
                 Partition by column (optional)
                 <input
@@ -806,7 +806,8 @@ Content-Type: application/json
                   }}
                 />
               </label>
-            )}
+            )
+          }
           {discovered && (
             <button
               className="button primary"
