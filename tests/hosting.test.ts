@@ -282,13 +282,13 @@ it("creates read-only PlanetScale credentials and refuses unexpected privileges"
     "planetscale",
     "token",
     path,
-    "Helix Foundry test",
+    "Meridian test",
   );
   expect(result.kind).toBe("mysql");
   expect(result.config.tls).toBe(true);
   role = "admin";
   await expect(
-    resolveHostingDatabase("planetscale", "token", path, "Helix Foundry test"),
+    resolveHostingDatabase("planetscale", "token", path, "Meridian test"),
   ).rejects.toThrow("read-only");
 });
 

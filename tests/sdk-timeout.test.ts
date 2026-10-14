@@ -1,5 +1,5 @@
 import { it, expect, vi, afterEach } from "vitest";
-import { FoundryClient, FoundryError } from "../packages/sdk/src/index.js";
+import { MeridianClient, MeridianError } from "../packages/sdk/src/index.js";
 afterEach(() => vi.unstubAllGlobals());
 // A fetch mock that honors abort like real fetch (rejects with TimeoutError),
 // but never otherwise responds: exercises the client timeout path.
@@ -11,9 +11,9 @@ const hangingFetch = vi.fn(
       );
     }),
 );
-it("fails hung requests with FoundryError 408 instead of hanging forever", async () => {
+it("fails hung requests with MeridianError 408 instead of hanging forever", async () => {
   vi.stubGlobal("fetch", hangingFetch);
-  const client = new FoundryClient({
+  const client = new MeridianClient({
     baseUrl: "https://foundry.invalid",
     workspaceId: "w",
     token: "fixture",
@@ -22,14 +22,14 @@ it("fails hung requests with FoundryError 408 instead of hanging forever", async
   const start = Date.now();
   await expect(client.list("dataset")).rejects.toMatchObject({
     status: 408,
-  } satisfies Partial<FoundryError>);
+  } satisfies Partial<MeridianError>);
   expect(Date.now() - start).toBeLessThan(5000);
   expect(hangingFetch).toHaveBeenCalledOnce();
 });
 it("defaults to a 10-minute timeout covering long imports", async () => {
   const f = vi.fn().mockResolvedValue(new Response("{}"));
   vi.stubGlobal("fetch", f);
-  const client = new FoundryClient({
+  const client = new MeridianClient({
     baseUrl: "https://foundry.invalid",
     workspaceId: "w",
     token: "fixture",

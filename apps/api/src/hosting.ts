@@ -388,7 +388,7 @@ export function registerHosting(
           provider,
           authToken,
           body.path,
-          "Helix Foundry " + id.slice(-12),
+          "Meridian " + id.slice(-12),
           body.password,
         );
         connection = await transaction(store, a.scope, async (tx) => {

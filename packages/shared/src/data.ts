@@ -26,6 +26,14 @@ export const SourceSchema = z.object({
     .describe(
       "UTC snapshot fallback schedule. Working PostgreSQL/MySQL CDC takes precedence; defaults to every five minutes when CDC is unavailable, hourly for Stripe and WorkOS, and every six hours for PostHog.",
     ),
+  partitionColumn: z
+    .string()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe(
+      "Optional column to partition the imported snapshot by. When set, the dataset is stored as one Parquet per distinct value of this column so queries can prune to the partitions they touch. Choose a low-cardinality column (e.g. region, month).",
+    ),
 });
 export type SourceSyncState = {
   mode: "auto" | "cdc" | "snapshot";

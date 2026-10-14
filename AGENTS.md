@@ -1,14 +1,20 @@
-# Helix Foundry agent runbook
+# Meridian agent runbook
 
-This runbook is for coding agents (Claude Code, Codex, Cursor and others) that are asked to set up Helix Foundry on someone's computer or to work on its code. People should start with [README.md](README.md).
+This runbook is for coding agents (Claude Code, Codex, Cursor and others) that are asked to set up Meridian on someone's computer or to work on its code. People should start with [README.md](README.md).
 
 ## Goal
 
-Install and start Helix Foundry with Docker Compose, prove that it is healthy, and give the user a URL to open. You are done when this command returns `{"ok":true,"service":"helix-foundry"}`:
+Install and start Meridian with Docker Compose, prove that it is healthy, and give the user a URL to open. You are done when this command returns `{"ok":true,"service":"meridian"}`:
 
 ```sh
 curl -fsS http://localhost:<PORT>/api/health
 ```
+
+## Rebrand note — Meridian fork
+
+This is the **Meridian** hard fork of Helix Foundry. The product, UI, `@meridian/*` package names, the `meridian:local` Docker image tag and the `/api/health` `service` field (`"meridian"`) are all rebranded.
+
+> **Do NOT rename the Compose project or the data volumes.** For data continuity with existing installs the Compose project name stays `helix-foundry` and the named volumes stay `foundry-data` / `helix-data` (Docker volume names `helix-foundry_foundry-data` / `helix-foundry_helix-data`). Renaming the project or the volume prefix to `meridian_*` would orphan existing users' data and their encryption key. Likewise the internal HelixDB graph labels `FoundryRecord` / `FoundryRelationship` are stored data and must keep their names.
 
 ## Local-fork inference override
 
@@ -51,7 +57,7 @@ The login above must return `{"ok":true}` and set a `foundry_session` cookie; su
 - If a port is busy, choose another port. Do not stop whatever is using it.
 - Do not ask for, type or store the user's Claude or OpenAI keys or database passwords. The user enters them in the browser.
 - Do not install software (Docker, Ollama, Node, browsers) without asking, and never use `sudo`.
-- Shell variables usually do not survive between your tool calls. Every block below that needs the app's port reads it from `.env` again. Never assume 3001: another program, or a development copy of Helix Foundry, may be listening there.
+- Shell variables usually do not survive between your tool calls. Every block below that needs the app's port reads it from `.env` again. Never assume 3001: another program, or a development copy of Meridian, may be listening there.
 - Re-running these steps is safe. `scripts/setup.sh` never overwrites an existing `.env`, and step 2 keeps the port of an installation that is already running.
 
 ## 1. Get the code
@@ -97,7 +103,7 @@ The Compose project name is always `helix-foundry`, whichever folder it runs fro
 | `.env` exists                                                                                        | Existing install. Keep `.env` and its settings, and continue. `setup.sh` will leave it alone.                                                                                                                                                                        |
 | No `.env`, but `helix-foundry_helix-data` or `helix-foundry_foundry-data` exists                     | Stop and ask the user. That data was written with a key from an earlier `.env`. Ask whether they have that file or a backup `config.env`. A new key leaves the workspaces in place but makes their stored credentials unreadable. (`helix-foundry_model-data` alone holds only model weights and is safe to reuse.) |
 | A `helix-foundry` project is listed whose CONFIG FILES path is not this folder's `compose.yaml`      | Stop and ask the user which checkout to use. Starting from this folder would take over and recreate the running containers, and use their volumes with this folder's `.env`.                                                                                        |
-| `app running:` is printed and the project is this folder                                             | Helix Foundry is already running here. Keep its port (the number before `->`), skip the port check, and continue at step 5 unless the user asked you to upgrade.                                                                                                    |
+| `app running:` is printed and the project is this folder                                             | Meridian is already running here. Keep its port (the number before `->`), skip the port check, and continue at step 5 unless the user asked you to upgrade.                                                                                                    |
 
 If `.env` exists, check that its keys are set without printing them:
 
@@ -112,7 +118,7 @@ grep -Eq '^ENCRYPTION_KEY=.{32,}$' .env && grep -Eq '^INTERNAL_KEY=.{32,}$' .env
 
 Compose publishes only the app, on `127.0.0.1`, port 3001 by default (or `PUBLIC_PORT` from `.env`). HelixDB, the executor and Ollama publish no ports, so other services on 6996, 3002 or 11434 do not matter for the Docker install.
 
-Skip this check if Helix Foundry is already running from this folder (see above). Otherwise run this block as one command. It tests the configured port first, then a few alternatives, and also looks at ports held by other containers, which `lsof` cannot see on Linux without root:
+Skip this check if Meridian is already running from this folder (see above). Otherwise run this block as one command. It tests the configured port first, then a few alternatives, and also looks at ports held by other containers, which `lsof` cannot see on Linux without root:
 
 ```sh
 CONF=$(sed -n 's/^PUBLIC_PORT=//p' .env 2>/dev/null | tail -n 1); CONF=${CONF:-3001}
@@ -248,7 +254,7 @@ done
 if [ -n "$ok" ]; then printf '\nReady on port %s\n' "$PORT"; else echo "NOT READY after 5 minutes on port $PORT"; fi
 ```
 
-It waits up to five minutes and always ends with `Ready on port …` or `NOT READY …`. An HTTP 200 with `{"ok":true,"service":"helix-foundry"}` means the API is up and HelixDB answered at startup, because the app initialises its schema in HelixDB before it starts listening. On first boot, the app and worker can exit and restart while HelixDB is still starting. Docker restarts them automatically.
+It waits up to five minutes and always ends with `Ready on port …` or `NOT READY …`. An HTTP 200 with `{"ok":true,"service":"meridian"}` means the API is up and HelixDB answered at startup, because the app initialises its schema in HelixDB before it starts listening. On first boot, the app and worker can exit and restart while HelixDB is still starting. Docker restarts them automatically.
 
 If it is still not ready after five minutes, collect the state and use [troubleshooting](#troubleshooting):
 
@@ -259,7 +265,7 @@ docker compose --profile local logs --tail 100 app helix
 
 ## 6. Verify
 
-1. **Health:** the command in step 5 returned `{"ok":true,"service":"helix-foundry"}`.
+1. **Health:** the command in step 5 returned `{"ok":true,"service":"meridian"}`.
 2. **Containers:** `docker compose --profile local ps` shows `app` as `(healthy)`, and `worker`, `executor` and `helix` running. On path A, `ollama` is running too. The health check runs every 15 seconds, so `health: starting` for the first part of a minute is normal.
 3. **Model (path A):** `docker compose --profile local ps -a model-init` shows `Exited (0)` once `qwen3:4b` is downloaded. While it is still running, the download is in progress. The user does not need to wait: if the model is still missing when they choose Local, the app downloads it itself.
 4. **Deeper check** from inside the app container (optional on paths A and C, required on path B). It checks HelixDB, the executor, the model endpoint and the key lengths:
@@ -277,7 +283,7 @@ Do not run `pnpm doctor` on the host to check a Docker install. It reads the dev
 Tell the user the URL, the path you used, and what they do next. Never include the contents of `.env`. For example:
 
 ```text
-Helix Foundry is running at http://localhost:3001
+Meridian is running at http://localhost:3001
 
 Next, in your browser:
 1. Open the URL. There is no account or sign-in.
@@ -350,7 +356,7 @@ The loop waits up to five minutes and prints `complete` once the workspace is pu
 | Setup says "Local AI is unavailable. Start Ollama and retry."                            | Started without `--profile local` and without `MODEL_ENDPOINT`, or native Ollama is not running. | Path A: `docker compose --profile local up -d`. Path B: start Ollama and check `MODEL_ENDPOINT`. Or choose Claude or OpenAI.                                                                                                 |
 | `model-init` keeps running or restarting                                                 | The model download is slow or was interrupted.                                                   | Wait, and check `docker compose --profile local logs --tail 50 model-init`. It retries on failure.                                                                                                                                  |
 | "Default model digest does not match the tested release"                                 | The registry's `qwen3:4b` no longer matches the pinned digest in `docs/models.json`.             | Tell the user. They can choose Claude or OpenAI instead.                                                                                                                                                                     |
-| Code changes or `git pull` have no effect                                                | Compose reused the old `helix-foundry:local` image.                                              | Start with `--build`.                                                                                                                                                                                                        |
+| Code changes or `git pull` have no effect                                                | Compose reused the old `meridian:local` image.                                              | Start with `--build`.                                                                                                                                                                                                        |
 | Editing `APP_ORIGIN`, `HELIX_URL` or `OLLAMA_URL` in `.env` has no effect                | Those lines are only for `pnpm dev`.                                                             | Use `PUBLIC_PORT`, `PUBLIC_ORIGIN` and `MODEL_ENDPOINT` for the Docker install.                                                                                                                                              |
 | Values in `.env` seem to be ignored                                                      | The same variable is exported in the shell, which overrides `.env`.                              | Run `env` and look for `PUBLIC_PORT`, `PUBLIC_ORIGIN` or `MODEL_ENDPOINT`; unset any you find.                                                                                                                                      |
 | On Linux, the app cannot reach `http://host.docker.internal:11434`                       | `host.docker.internal` is a Docker Desktop name, and `compose.yaml` adds no mapping for it.      | Use path A on Linux.                                                                                                                                                                                                         |
@@ -443,7 +449,7 @@ lsof -nP -iTCP:6996 -sTCP:LISTEN
 ```
 
 - A stopped `helix-foundry-dev` container: start it with `docker start helix-foundry-dev`.
-- Port 6996 already in use: ask the user what it is. If it is their Helix Foundry development HelixDB, reuse it as it is. If not, publish a new container on another free port and set `HELIX_URL` in `.env` to match.
+- Port 6996 already in use: ask the user what it is. If it is their Meridian development HelixDB, reuse it as it is. If not, publish a new container on another free port and set `HELIX_URL` in `.env` to match.
 - Neither: create it.
 
 ```sh

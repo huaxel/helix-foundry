@@ -23,10 +23,10 @@ const guides: Record<string, Guide> = {
           API keys in Stripe
         </External>{" "}
         and click <strong>Create restricted key</strong>. Use a sandbox or test
-        mode first if you want to try Foundry without live data.
+        mode first if you want to try Meridian without live data.
       </li>
       <li>
-        Name it "Helix Foundry", then set <strong>Read</strong> for the objects
+        Name it "Meridian", then set <strong>Read</strong> for the objects
         you want (for example Customers, Products, Subscriptions, Invoices,
         Charges, Payment Intents, Disputes, Payouts, Balance). Leave everything
         else as <strong>None</strong>.
@@ -52,7 +52,7 @@ const guides: Record<string, Guide> = {
         when created, so create a new one if you no longer have it.
       </li>
       <li>
-        Paste it below. WorkOS keys can make changes, but Foundry only reads.
+        Paste it below. WorkOS keys can make changes, but Meridian only reads.
       </li>
     </ol>
   ),
@@ -101,7 +101,7 @@ GRANT CONNECT ON DATABASE app TO foundry_readonly;
 GRANT USAGE ON SCHEMA public TO foundry_readonly;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO foundry_readonly;`}</pre>
       <p>
-        Live sync also needs replication permission. Without it, Foundry
+        Live sync also needs replication permission. Without it, Meridian
         refreshes a complete snapshot every five minutes.
       </p>
     </>

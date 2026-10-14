@@ -1,7 +1,7 @@
 name: helix-foundry
 x-app: &app
   build: .
-  image: helix-foundry:local
+  image: meridian:local
   restart: unless-stopped
   volumes:
     - foundry-data:/data
@@ -77,6 +77,10 @@ services:
       DUCKDB_THREADS: ${DUCKDB_THREADS:-1}
       DUCKDB_TEMP_LIMIT: ${DUCKDB_TEMP_LIMIT:-2GB}
       DUCKDB_TEMP_DIR: ${DUCKDB_TEMP_DIR:-/tmp}
+      # materialize (default) = existing behavior. Set EXECUTOR_MODE=stream and
+      # use compose.stream.yaml for the OS-isolated streaming executor.
+      EXECUTOR_MODE: ${EXECUTOR_MODE:-materialize}
+      EXECUTOR_SANDBOX_ROOT: ${EXECUTOR_SANDBOX_ROOT:-/tmp/executor-sbx}
     mem_limit: 2g
     cpus: 1.5
     pids_limit: 128

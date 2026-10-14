@@ -42,14 +42,24 @@ export async function ingestFile(
   sourceId?: string,
   datasetId?: string,
   versionId?: string,
-  schema?: { name: string; type: string }[],
-  jobId?: string,
-  localSource?: {
-    path: string;
-    fingerprint: { size: number; mtimeMs: number };
-  },
-  approximateProfile = false,
+  opts: {
+    schema?: { name: string; type: string }[];
+    jobId?: string;
+    localSource?: {
+      path: string;
+      fingerprint: { size: number; mtimeMs: number };
+    };
+    approximateProfile?: boolean;
+    partitionColumn?: string;
+  } = {},
 ) {
+  const {
+    schema,
+    jobId,
+    localSource,
+    approximateProfile = false,
+    partitionColumn,
+  } = opts;
   const version =
     versionId === jobId && jobId
       ? "snapshot_" + jobId
@@ -59,6 +69,33 @@ export async function ingestFile(
     if (existing) {
       if (!localSource && file) await removeStagedInput(scope, file);
       return existing;
+    }
+  }
+  // Incremental refresh: on a re-ingest of a partitioned dataset whose current
+  // version carries content fingerprints, pass them so the engine hard-links
+  // unchanged partition files instead of re-writing them (dedups + faster).
+  let reusePartitions:
+    | { key: string; file: string; fingerprint: string }[]
+    | undefined;
+  if (partitionColumn && datasetId) {
+    const existing = await store.get(scope, datasetId);
+    const activeVerId = existing?.data.activeVersion as string | undefined;
+    if (activeVerId) {
+      const activeVer = await store.get(scope, activeVerId);
+      const parts = activeVer?.data.partitions as
+        | { key: string; file: string; fingerprint?: string }[]
+        | undefined;
+      if (Array.isArray(parts) && parts.length) {
+        const withFp = parts.filter(
+          (p) => typeof p.fingerprint === "string" && p.fingerprint.length,
+        );
+        if (withFp.length)
+          reusePartitions = withFp.map((p) => ({
+            key: p.key,
+            file: p.file,
+            fingerprint: p.fingerprint as string,
+          }));
+      }
     }
   }
   const r = await execute({
@@ -71,6 +108,8 @@ export async function ingestFile(
     schema,
     limit: 3,
     approximateProfile,
+    ...(partitionColumn ? { partitionColumn } : {}),
+    ...(reusePartitions ? { reusePartitions } : {}),
   });
   const storedProfile = compactProfile(r.profile);
   let imported: Resource;
@@ -98,12 +137,14 @@ export async function ingestFile(
         {
           datasetId: ds.id,
           profile: storedProfile,
-          ...(localSource
-            ? {
-                sourcePath: localSource.path,
-                sourceFingerprint: localSource.fingerprint,
-              }
-            : { file: version + ".parquet" }),
+          ...(partitionColumn
+            ? { partitionColumn, partitions: r.partitions }
+            : localSource
+              ? {
+                  sourcePath: localSource.path,
+                  sourceFingerprint: localSource.fingerprint,
+                }
+              : { file: version + ".parquet" }),
         },
         version,
       );
@@ -115,12 +156,14 @@ export async function ingestFile(
         activeVersion: drift ? ds.data.activeVersion : version,
         pendingVersion: drift ? version : null,
         versions: [version, ...ds.data.versions],
-        ...(localSource
-          ? {
-              sourcePath: localSource.path,
-              sourceFingerprint: localSource.fingerprint,
-            }
-          : { sourcePath: undefined, sourceFingerprint: undefined }),
+        ...(partitionColumn
+          ? { sourcePath: undefined, sourceFingerprint: undefined }
+          : localSource
+            ? {
+                sourcePath: localSource.path,
+                sourceFingerprint: localSource.fingerprint,
+              }
+            : { sourcePath: undefined, sourceFingerprint: undefined }),
         sourceId: sourceId || ds.data.sourceId,
         table: datasetTable(ds.id),
         lastSync: now(),
@@ -172,6 +215,11 @@ export async function ingestFile(
     await rm(resolve(config.dataDir, "datasets", scope, `${version}.parquet`), {
       force: true,
     }).catch(() => {});
+    if (partitionColumn)
+      await rm(
+        resolve(config.dataDir, "datasets", scope, version),
+        { recursive: true, force: true },
+      ).catch(() => {});
     throw error;
   }
   // The durable Parquet snapshot is committed; the staged source copy is no
@@ -186,6 +234,7 @@ export async function ingestRows(
   rows: unknown[],
   sourceId?: string,
   datasetId?: string,
+  partitionColumn?: string,
 ) {
   assert(rows.length > 0, "Provide at least one row");
   const dir = resolve(config.dataDir, "incoming", scope);
@@ -196,7 +245,16 @@ export async function ingestRows(
     rows.map((r) => JSON.stringify(r)).join("\n"),
   );
   try {
-    return await ingestFile(store, scope, name, file, sourceId, datasetId);
+    return await ingestFile(
+      store,
+      scope,
+      name,
+      file,
+      sourceId,
+      datasetId,
+      undefined,
+      { partitionColumn },
+    );
   } catch (error) {
     await removeStagedInput(scope, file);
     throw error;
@@ -220,14 +278,22 @@ export async function datasetInputs(
     );
     const version = await store.get(scope, ds.data.activeVersion as string);
     assert(version?.kind === "version", "Dataset version is unavailable", 404);
+    const vd = version.data;
     results.push({
       table: datasetTable(id),
       version: ds.data.activeVersion as string,
-      ...(version.data.sourcePath
+      ...(vd.partitions && vd.partitions.length
         ? {
-            sourcePath: version.data.sourcePath,
-            sourceFingerprint: version.data.sourceFingerprint,
+            // Partitioned version: the full (unpruned) set of partition files
+            // plus the manifest, so queryDatasets can prune by partition-key
+            // filters before the executor opens any files.
+            files: vd.partitions.map((p: any) => p.file),
+            partitionColumn: vd.partitionColumn,
+            partitions: vd.partitions,
           }
+        : {}),
+      ...(vd.sourcePath
+        ? { sourcePath: vd.sourcePath, sourceFingerprint: vd.sourceFingerprint }
         : {}),
       aliases: datasetAliases(ds.name),
     });
@@ -259,16 +325,65 @@ export async function queryDatasets(
       "Unknown filter column",
     );
   }
-  const filtered = inputs.map((input) => ({
+  const filtered = inputs.map((input: any) => ({
     ...input,
     filters: (opts.filters || []).filter(
       (f) => datasetTable(f.datasetId) === input.table,
     ),
   }));
+  // Partition pruning: when a filter targets an input's partition column, keep
+  // only the partitions whose key matches a filter value. A filter on any other
+  // column still reads every partition and is applied as a WHERE by the engine.
+  // read_parquet([]) throws, so a pruned-to-zero set short-circuits to an empty
+  // result instead of reaching the executor.
+  const pruned = filtered.map((input: any) => {
+    if (!input.partitionColumn || !input.files || !input.partitions)
+      return input;
+    const pf = (input.filters || []).filter(
+      (f: any) => f.column === input.partitionColumn,
+    );
+    if (pf.length === 0) return input; // no partition-key filter -> all partitions
+    // A null filter matches the null partition (stored under key "").
+    const norm = (v: unknown) => (v === null || v === undefined ? "" : String(v));
+    const keys = new Set(pf.map((f: any) => norm(f.value)));
+    const kept = (input.partitions as { key: string; file: string }[]).filter(
+      (p) => keys.has(norm(p.key)),
+    );
+    return { ...input, files: kept.map((p) => p.file) };
+  });
+  if (pruned.some((i: any) => i.partitions && (i.files || []).length === 0)) {
+    // The partition-key filter matches no partitions -> zero rows. Build the
+    // empty result from the first dataset's profile so the columns are right.
+    const ds = await store.get(scope, [...new Set(ids)][0]);
+    const profile = ds?.data.profile;
+    return {
+      profile: profile
+        ? { ...profile, rows: 0, duplicateRows: 0, sample: [] }
+        : { rows: 0, columns: [], sample: [], fingerprint: "" },
+      version: "",
+      rows: [],
+      citations: inputs.map((input, i) => ({
+        datasetId: [...new Set(ids)][i],
+        version: input.version,
+      })),
+      state: "dataset_snapshot",
+    };
+  }
+  // Send only the executor-relevant input fields (drop the manifest).
+  const executorInputs = pruned.map((i: any) => ({
+    table: i.table,
+    version: i.version,
+    ...(i.files ? { files: i.files } : {}),
+    ...(i.sourcePath
+      ? { sourcePath: i.sourcePath, sourceFingerprint: i.sourceFingerprint }
+      : {}),
+    ...(i.aliases ? { aliases: i.aliases } : {}),
+    ...(i.filters?.length ? { filters: i.filters } : {}),
+  }));
   const result = await execute({
     mode: "query",
     scope,
-    inputs: filtered,
+    inputs: executorInputs,
     sql,
     version: randomUUID(),
     limit: opts.limit,

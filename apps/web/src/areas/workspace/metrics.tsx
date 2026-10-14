@@ -555,7 +555,8 @@ export function KeyMetrics() {
   const query = useQuery({
     queryKey: [id, "home-metrics"],
     queryFn: () => api<HomeMetrics>(`/workspaces/${id}/home/metrics`),
-    refetchInterval: (q) => (q.state.data?.generating ? 5000 : false),
+    refetchInterval: (q) =>
+      q.state.data?.generating || q.state.data?.computing ? 5000 : false,
   });
   const data = query.data;
   if (data?.status === "empty") return null;
@@ -612,12 +613,20 @@ export function KeyMetrics() {
               AI is picking metrics for your data…
             </p>
           ) : (
-            data?.error && (
-              <p className="wk-metrics-note" title={data.error}>
-                <CircleAlert size={13} aria-hidden className="is-warning" />
-                Couldn’t pick new metrics: {data.error}
-              </p>
-            )
+            <>
+              {data?.computing && (
+                <p className="wk-metrics-note" role="status">
+                  <RefreshCw size={13} aria-hidden className="wk-metrics-pulse" />
+                  Your data changed — updating values…
+                </p>
+              )}
+              {data?.error && (
+                <p className="wk-metrics-note" title={data.error}>
+                  <CircleAlert size={13} aria-hidden className="is-warning" />
+                  Couldn’t pick new metrics: {data.error}
+                </p>
+              )}
+            </>
           )}
         </div>
         {data && role !== "viewer" && (

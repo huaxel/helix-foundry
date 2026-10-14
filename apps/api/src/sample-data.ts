@@ -1,6 +1,6 @@
 // Loopwell: a fictional B2B feedback and roadmap SaaS, seen through the five systems
 // a startup like it runs on. One backbone of accounts and users is rendered in each
-// system's own shape (matching Foundry's connectors), so the same customer appears as
+// system's own shape (matching Meridian's connectors), so the same customer appears as
 // a PlanetScale account, a WorkOS organization, a Stripe customer, PostHog activity and
 // S3 exports. Deterministic: seeded streams and a fixed anchor date, no wall clock.
 import type { sampleSources } from "../../../packages/shared/src/index.js";

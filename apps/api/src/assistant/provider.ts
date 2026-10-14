@@ -56,17 +56,89 @@ export async function inputsFor(
       const d = datasets.get(id);
       assert(d?.data.activeVersion, `Unknown dataset ${id}`);
       const v = await store.get(scope, d.data.activeVersion as string);
+      const vd = v?.data;
       return {
         table: datasetTable(id),
         version: d.data.activeVersion as string,
-        ...(v?.data?.sourcePath
+        // Partitioned version: read the whole partition set (the assistant's
+        // general aggregations have no partition-key filter to prune by).
+        ...(vd?.partitions && vd.partitions.length
+          ? { files: vd.partitions.map((p: any) => p.file) }
+          : {}),
+        ...(vd?.sourcePath
           ? {
-              sourcePath: v.data.sourcePath,
-              sourceFingerprint: v.data.sourceFingerprint,
+              sourcePath: vd.sourcePath,
+              sourceFingerprint: vd.sourceFingerprint,
             }
           : {}),
         aliases: datasetAliases(d.name),
       };
     }),
   );
+}
+
+// Prune a partitioned input down to the partition files a scoped question
+// actually needs. `declared` maps a dataset table name to the partition
+// values the model named; `manifests` maps the table to its stored
+// partition manifest. Pruning is opt-in: a table with no (valid)
+// declaration keeps every partition, so an uncertain model always reads
+// the full, correct snapshot.
+export function prunePartitionInputs<T extends { table: string; files?: string[] }>(
+  inputs: T[],
+  declared: Record<string, string[]> | undefined,
+  manifests: Record<string, { key: string; file: string }[]>,
+): T[] {
+  if (!declared || !Object.keys(declared).length) return inputs;
+  const norm = (x: unknown) => (x === null || x === undefined ? "" : String(x));
+  return inputs.map((input) => {
+    const values = declared[input.table];
+    const manifest = manifests[input.table];
+    if (!values?.length || !manifest?.length) return input;
+    const keys = new Set(manifest.map((p) => norm(p.key)));
+    const wanted = new Set(values.map(norm));
+    if (![...wanted].some((v) => keys.has(v))) return input;
+    return {
+      ...input,
+      files: manifest
+        .filter((p) => wanted.has(norm(p.key)))
+        .map((p) => p.file),
+    } as T;
+  });
+}
+
+// Resolve the model's declared partitions (keyed by dataset id, name, or
+// table) to table names, fetch each scoped input's stored manifest, and
+// prune the inputs' file lists to the matching partitions.
+export async function applyPartitionPrune<T extends {
+  table: string;
+  version: string;
+  files?: string[];
+}>(
+  inputs: T[],
+  declared: Record<string, string[]> | undefined,
+  datasets: Map<string, Resource>,
+  store: Store,
+  scope: string,
+): Promise<T[]> {
+  if (!declared || !Object.keys(declared).length) return inputs;
+  const byTable: Record<string, string[]> = {};
+  for (const [key, values] of Object.entries(declared)) {
+    if (!Array.isArray(values) || !values.length) continue;
+    const d = [...datasets.values()].find(
+      (x) => x.id === key || x.name === key || datasetTable(x.id) === key,
+    );
+    if (d) byTable[datasetTable(d.id)] = values.map(String);
+  }
+  if (!Object.keys(byTable).length) return inputs;
+  const manifests: Record<string, { key: string; file: string }[]> = {};
+  for (const input of inputs) {
+    if (!byTable[input.table]) continue;
+    const v = await store.get(scope, input.version);
+    if (v?.data.partitions?.length)
+      manifests[input.table] = v.data.partitions.map((p: any) => ({
+        key: p.key,
+        file: p.file,
+      }));
+  }
+  return prunePartitionInputs(inputs, byTable, manifests);
 }

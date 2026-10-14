@@ -2,6 +2,7 @@ import { registerOnboarding } from "./onboarding.js";
 import { registerHosting } from "./hosting.js";
 import { publicResource } from "./onboarding-state.js";
 import { effectiveObject, effectiveObjects } from "./context.js";
+import { lazyRecordPage, lazyType, objectView } from "./records.js";
 import { openapiTransform } from "./openapi.js";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
@@ -41,7 +42,7 @@ import { recordLabel, registerOntologyRoutes } from "./routes/ontology.js";
 import { registerAnalystRoutes } from "./routes/analyst.js";
 import { registerWorkspaceRoutes } from "./routes/workspace.js";
 import { registerCatalogRoutes } from "./routes/catalog.js";
-// Helix Foundry runs on one computer for one person, with no sign-in. That
+// Meridian runs on one computer for one person, with no sign-in. That
 // person is the installation's owner; their session never expires because
 // provider sign-in (hosting.ts) is bound to a session.
 const LOCAL_USER = "local-user",
@@ -104,7 +105,7 @@ export async function createApp(store: Store) {
   await app.register(swagger, {
     transform: openapiTransform,
     openapi: {
-      info: { title: "Helix Foundry API", version: "0.1.0" },
+      info: { title: "Meridian API", version: "0.1.0" },
       components: {
         securitySchemes: {
           token: { type: "http", scheme: "bearer" },
@@ -261,7 +262,7 @@ export async function createApp(store: Store) {
             : resource(
                 "global",
                 "installation",
-                "Helix Foundry",
+                "Meridian",
                 { ownerId: u.id },
                 "installation",
               ),
@@ -301,7 +302,7 @@ export async function createApp(store: Store) {
       await newWorkspace(identity.user, "My workspace");
     return identity;
   }
-  app.get("/api/health", async () => ({ ok: true, service: "helix-foundry" }));
+  app.get("/api/health", async () => ({ ok: true, service: "meridian" }));
   // Password sign-in for network deployments. Rate-limited per IP on top of
   // the global limit; a wrong password never reveals whether auth is on.
   app.post(
@@ -401,6 +402,37 @@ export async function createApp(store: Store) {
           !(r.kind === "dataset" && r.data.generation)) ||
         r.data.generation === ws?.data.activeGeneration,
     );
+    // Lazy records: a large type whose rows were never staged pages its
+    // snapshot via SQL (constant memory) instead of this full-list scan.
+    if (req.params.kind === "object" && req.query.type) {
+      const lazy = await lazyType(
+        store,
+        a.scope,
+        String(req.query.type),
+        rows,
+      );
+      if (lazy) {
+        const { items, total } = await lazyRecordPage(
+          store,
+          a.scope,
+          lazy,
+          rows,
+          {
+            search: req.query.search ? String(req.query.search) : undefined,
+            field: req.query.field ? String(req.query.field) : undefined,
+            value:
+              req.query.value !== undefined
+                ? String(req.query.value)
+                : undefined,
+            sort: req.query.sort ? String(req.query.sort) : undefined,
+            dir: req.query.dir === "desc" ? "desc" : "asc",
+            offset,
+            limit,
+          },
+        );
+        return { items: items.map(scrub), total };
+      }
+    }
     if (req.params.kind === "dataset") {
       const snapshots = await store.getMany(
         a.scope,
@@ -490,7 +522,20 @@ export async function createApp(store: Store) {
     const a = await access(req);
     assert(publicKinds.has(req.params.kind), "Resource type not found", 404);
     const r = await store.get(a.scope, req.params.id);
-    assert(r && r.kind === req.params.kind, "Resource not found", 404);
+    assert(r, "Resource not found", 404);
+    if (r.kind === "recordRef") {
+      // A lazy record's pointer: resolve it to its snapshot row view.
+      const v = await objectView(store, a.scope, r.id);
+      assert(
+        v &&
+          v.data.generation ===
+            (await store.get(a.scope, "workspace"))?.data.activeGeneration,
+        "Resource not found",
+        404,
+      );
+      return scrub(v);
+    }
+    assert(r.kind === req.params.kind, "Resource not found", 404);
     if (
       generationKinds.has(r.kind) ||
       (r.kind === "dataset" && r.data.generation)

@@ -19,8 +19,10 @@ export async function runUploadJob(store: Store, scope: string, job: Resource) {
     undefined,
     job.data.datasetId,
     job.id,
-    undefined,
-    job.id,
+    {
+      jobId: job.id,
+      partitionColumn: job.data.partitionColumn,
+    },
   );
 }
 
@@ -45,14 +47,18 @@ export async function runSyncJob(store: Store, scope: string, job: Resource) {
         source.id,
         source.data.datasetId || "source_" + source.id,
         job.id,
-        imported.schema,
-        job.id,
-        imported.sourcePath && imported.sourceFingerprint
-          ? {
-              path: imported.sourcePath,
-              fingerprint: imported.sourceFingerprint,
-            }
-          : undefined,
+        {
+          schema: imported.schema,
+          jobId: job.id,
+          partitionColumn: source.data.partitionColumn,
+          localSource:
+            imported.sourcePath && imported.sourceFingerprint
+              ? {
+                  path: imported.sourcePath,
+                  fingerprint: imported.sourceFingerprint,
+                }
+              : undefined,
+        },
       );
     } finally {
       if (imported.file) await removeStagedInput(scope, imported.file);

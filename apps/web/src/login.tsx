@@ -35,7 +35,7 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
         className="hf-gate-error"
         onSubmit={submit}
       >
-        <p>Sign in to Helix Foundry.</p>
+        <p>Sign in to Meridian.</p>
         <label>
           Password
           <input

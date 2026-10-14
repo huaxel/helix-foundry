@@ -55,7 +55,7 @@ export function OntologyPage() {
           <Empty
             icon={Network}
             title="Give your data a shared language"
-            text="Foundry can suggest the customers, orders, and relationships hidden in your datasets. Publish a tested proposal to bring the model to life."
+            text="Meridian can suggest the customers, orders, and relationships hidden in your datasets. Publish a tested proposal to bring the model to life."
           />
         </div>
       )}

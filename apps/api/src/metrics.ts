@@ -41,6 +41,9 @@ type Stored = {
   metrics: Compiled[];
   results: {
     versions: Record<string, string>;
+    // Versions a background recompute is targeting; null means the stored
+    // values are current. Lets any replica see the update in flight.
+    pending?: Record<string, string> | null;
     computedAt: string;
     values: Record<string, HomeMetric["result"]>;
   };
@@ -755,6 +758,80 @@ export async function queueAiMetrics(
 }
 
 const inflight = new Map<string, Promise<HomeMetrics>>();
+// Background recomputes, per scope. In-process dedupe; the store's pending
+// marker is the cross-replica truth, and its commit guard stops a stale job
+// from tearing a newer one's values.
+const recomputing = new Map<string, Promise<void>>();
+// The inputs changed, so the stored values are stale. The heavy scan runs
+// here, out of the request: only the metrics that read a changed dataset
+// re-run, and the result commits only if we are still the target (a newer
+// change supersedes us; the loop below then picks that one up).
+function ensureRecompute(store: Store, scope: string) {
+  if (recomputing.has(scope)) return;
+  const job = (async () => {
+    try {
+      for (;;) {
+        const res = await store.get(scope, METRICS_ID);
+        const s = res?.data as Stored | undefined;
+        if (!s) return;
+        const datasets = await metricsDatasets(store, scope);
+        const target = versionsOf(s.metrics, datasets);
+        const changed = Object.keys(target).filter(
+          (id) => target[id] !== s.results.versions[id],
+        );
+        if (!changed.length) return;
+        const affected = s.metrics.filter((m) =>
+          changed.includes(m.spec.datasetId),
+        );
+        // Claim this target ourselves. If a change landed in the gap after
+        // our last commit and no load has claimed it, claiming here is what
+        // lets the commit guard below pass; without it the loop would re-run
+        // the scans forever against a marker that never matches.
+        await transaction(store, scope, async (tx) => {
+          const r = (await tx.get(METRICS_ID))!;
+          const d = r.data as Stored;
+          if (JSON.stringify(d.results.pending) === JSON.stringify(target))
+            return;
+          tx.update(r, {
+            ...d,
+            results: { ...d.results, pending: target },
+          });
+        });
+        const values = Object.fromEntries(
+          await Promise.all(
+            affected.map(
+              async (m) => [m.id, await run(store, scope, m)] as const,
+            ),
+          ),
+        );
+        await transaction(store, scope, async (tx) => {
+          const r = (await tx.get(METRICS_ID))!;
+          const d = r.data as Stored;
+          if (JSON.stringify(d.results.pending) !== JSON.stringify(target))
+            return;
+          tx.update(r, {
+            ...d,
+            results: {
+              versions: target,
+              pending: null,
+              computedAt: new Date().toISOString(),
+              values: { ...d.results.values, ...values },
+            },
+          });
+        });
+        // If the commit was superseded, loop and take the newer target; if it
+        // landed and the data has settled, the loop exits at the no-change
+        // check above.
+      }
+    } catch (e) {
+      // A failed recompute leaves the marker set; the next load retries.
+      console.error("[metrics] recompute failed", e);
+    } finally {
+      recomputing.delete(scope);
+    }
+  })();
+  recomputing.set(scope, job);
+}
 // What Home shows. Cached results come back as they are; results whose input
 // data changed are recomputed by code; a new schema gets stand-in metrics at
 // once and, with AI set up, a single AI call to pick better ones.
@@ -826,24 +903,30 @@ async function loadMetrics(
     const s = stored.data as Stored;
     const current = versionsOf(s.metrics, datasets);
     if (JSON.stringify(current) !== JSON.stringify(s.results.versions)) {
-      const values = Object.fromEntries(
-        await Promise.all(
-          s.metrics.map(
-            async (m) => [m.id, await run(store, scope, m)] as const,
-          ),
-        ),
-      );
+      // Claim the recompute (idempotent: a claim for the same target is a
+      // no-op) and let it run in the background; this request answers with
+      // the stored values instead of waiting on a full scan. The target is
+      // re-derived inside the transaction: if a metrics or data change lands
+      // while this request is in flight, the retry claims against the new
+      // state instead of writing a stale marker over it.
       stored = await transaction(store, scope, async (tx) => {
         const r = (await tx.get(METRICS_ID))!;
+        const d = r.data as Stored;
+        const current = versionsOf(
+          d.metrics,
+          await metricsDatasets(store, scope),
+        );
+        if (
+          JSON.stringify(current) === JSON.stringify(d.results.versions) ||
+          JSON.stringify(d.results.pending) === JSON.stringify(current)
+        )
+          return r;
         return tx.update(r, {
-          ...r.data,
-          results: {
-            versions: current,
-            computedAt: new Date().toISOString(),
-            values,
-          },
+          ...d,
+          results: { ...d.results, pending: current },
         });
       });
+      ensureRecompute(store, scope);
     }
   }
   const s = stored!.data as Stored,
@@ -855,6 +938,7 @@ async function loadMetrics(
     source: s.source,
     aiReady: ready,
     generating: status === "queued" || status === "running",
+    ...(s.results.pending != null ? { computing: true } : {}),
     error:
       status === "failed"
         ? runRes!.data.error || "The AI couldn’t pick metrics."

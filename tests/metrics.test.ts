@@ -2,11 +2,18 @@ import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { execute as localExecute } from "../services/executor/src/engine.js";
-// Counts the queries Home runs, so caching can be asserted.
-const executor = vi.hoisted(() => ({ queries: 0 }));
+// Counts the queries Home runs, so caching can be asserted; onQuery lets a
+// test change the data while a recompute's query is running.
+const executor = vi.hoisted(() => ({
+  queries: 0,
+  onQuery: undefined as undefined | (() => Promise<void>),
+}));
 vi.mock("../apps/api/src/executor.js", () => ({
   execute: async (job: any) => {
-    if (job.mode === "query") executor.queries++;
+    if (job.mode === "query") {
+      executor.queries++;
+      if (executor.onQuery) await executor.onQuery();
+    }
     return localExecute(job);
   },
 }));
@@ -48,6 +55,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   vi.restoreAllMocks();
+  executor.onQuery = undefined;
   await app.close();
   for (const d of ["incoming", "datasets"])
     await rm(resolve(config.dataDir, d, scope), {
@@ -87,6 +95,15 @@ async function counted<T>(fn: () => Promise<T>) {
   executor.queries = 0;
   const value = await fn();
   return { value, queries: executor.queries };
+}
+// Waits for a background recompute, started when the data changes, to land.
+async function settle(): Promise<HomeMetrics> {
+  for (let i = 0; i < 400; i++) {
+    const m = await home();
+    if (!m.computing) return m;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error("metrics did not settle");
 }
 // A new version of a sample dataset with its rows changed.
 async function reingest(
@@ -219,11 +236,24 @@ describe("code-picked metrics", () => {
       );
       latest.amount_paid += 12345;
     });
+    // The first load after the change answers at once with the stored
+    // values; the heavy scan runs in the background (it may already be
+    // running by the time this response is read).
     const changed = await counted(home);
-    const next = changed.value;
-    // The stored queries run again, and nothing is picked again.
-    expect(changed.queries).toBeGreaterThan(0);
-    expect(changed.queries).toBeLessThanOrEqual(m.metrics.length);
+    const stale = changed.value;
+    expect(stale.computing).toBe(true);
+    expect(stale.source).toBe("computed");
+    expect(byTitle(stale, "Revenue")!.result.value).toBe(
+      byTitle(m, "Revenue")!.result.value,
+    );
+    const settled = await counted(settle);
+    const next = settled.value;
+    // Across both windows, only the metrics over the changed dataset ran.
+    expect(changed.queries + settled.queries).toBeGreaterThan(0);
+    expect(changed.queries + settled.queries).toBe(
+      next.metrics.filter((x) => x.dataset === "Invoices").length,
+    );
+    expect(next.computing).toBeUndefined();
     expect(next.source).toBe("computed");
     expect(next.metrics.map((x) => x.id)).toEqual(m.metrics.map((x) => x.id));
     expect(next.generatedAt).toBe(m.generatedAt);
@@ -252,6 +282,72 @@ describe("code-picked metrics", () => {
     ).toEqual(m.metrics.map((x) => x.id));
     expect(generate).not.toHaveBeenCalled();
     expect(await metricsRuns()).toEqual([]);
+  });
+
+  it("keeps converging when the data changes again while a recompute is running", async () => {
+    await samples();
+    const m = await home();
+    const invoices = await datasetNamed("Stripe · invoices"),
+      affected = m.metrics.filter((x) => x.dataset === "Invoices").length,
+      revId = m.metrics.find((x) => x.title === "Revenue")!.id;
+    expect(affected).toBeGreaterThan(0);
+    // First change: the recompute starts in the background. The hook below
+    // fires on its first query and bumps the same dataset again mid-run; the
+    // recompute must pick the newer version up and finish (the old code
+    // re-scanned forever once its commit guard no longer matched).
+    await reingest("Stripe · invoices", (rows) => {
+      const latest = rows.reduce((a, b) =>
+        Date.parse(a.created) >= Date.parse(b.created) ? a : b,
+      );
+      latest.amount_paid += 12345;
+    });
+    const finalRows = rowsOf("Stripe · invoices").map((r) => ({ ...r }));
+    const latest = finalRows.reduce((a, b) =>
+      Date.parse(a.created) >= Date.parse(b.created) ? a : b,
+    );
+    latest.amount_paid += 12345 + 777;
+    let bumped = false;
+    executor.onQuery = async () => {
+      if (bumped) return;
+      bumped = true;
+      const r = await request("POST", "/ingest", {
+        name: "Stripe · invoices",
+        rows: finalRows,
+        datasetId: invoices.id,
+      });
+      expect(r.statusCode, r.body).toBe(200);
+    };
+    const stale = await counted(home);
+    expect(stale.value.computing).toBe(true);
+    // Wait for convergence with plain store reads: no home() calls, because
+    // a load would claim the new target itself and hide the spin the old
+    // code had (re-run the scans forever against a marker that never
+    // matches, until some request happened to claim again).
+    for (let i = 0; i < 400; i++) {
+      const s = (await store.get(scope, "home_metrics"))!.data as any,
+        ds = (await store.get(scope, invoices.id))!;
+      if (
+        s.results.pending == null &&
+        s.results.versions[invoices.id] === ds.data.activeVersion
+      )
+        break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const s = (await store.get(scope, "home_metrics"))!.data as any,
+      ds = (await store.get(scope, invoices.id))!;
+    expect(s.results.pending, "recompute must finish").toBeNull();
+    expect(s.results.versions[invoices.id]).toBe(ds.data.activeVersion);
+    const expected = window30(finalRows, "created", "amount_paid");
+    expect(s.results.values[revId].value).toBeCloseTo(expected.value / 100, 2);
+    // Exactly two passes: one per version the dataset moved through.
+    expect(executor.queries).toBe(2 * affected);
+    // The following load is plain cache again.
+    const done = await home();
+    expect(done.computing).toBeUndefined();
+    expect(byTitle(done, "Revenue")!.result.value).toBeCloseTo(
+      expected.value / 100,
+      2,
+    );
   });
 
   it("returns empty for a workspace with no data", async () => {
@@ -723,7 +819,8 @@ describe("AI-picked metrics", () => {
     expect(generate).toHaveBeenCalledTimes(1);
     expect(await metricsRuns()).toHaveLength(1);
 
-    // New data re-runs the AI's queries by code.
+    // New data: the first load answers stale at once, and only the metrics
+    // over the changed dataset re-run in the background.
     await reingest("Stripe · invoices", (rows) =>
       rows.push({
         ...rows.at(-1)!,
@@ -731,14 +828,29 @@ describe("AI-picked metrics", () => {
         amount_paid: 50000,
       }),
     );
-    const refreshed = await counted(home);
-    expect(refreshed.queries).toBeGreaterThan(0);
-    expect(refreshed.queries).toBeLessThanOrEqual(picked.metrics.length);
+    const stale = await counted(home);
+    expect(stale.value).toMatchObject({
+      source: "ai",
+      generating: false,
+      computing: true,
+      generatedAt: picked.generatedAt,
+    });
+    expect(byTitle(stale.value, "Revenue")!.result.value).toBeCloseTo(
+      byTitle(picked, "Revenue")!.result.value!,
+      2,
+    );
+    const refreshed = await counted(settle);
+    // Only the metrics over the changed dataset re-ran, across both windows.
+    expect(stale.queries + refreshed.queries).toBeGreaterThan(0);
+    expect(stale.queries + refreshed.queries).toBe(
+      refreshed.value.metrics.filter((x) => x.dataset === "Invoices").length,
+    );
     expect(refreshed.value).toMatchObject({
       source: "ai",
       generating: false,
       generatedAt: picked.generatedAt,
     });
+    expect(refreshed.value.computing).toBeUndefined();
     expect(refreshed.value.metrics.map((x) => x.id)).toEqual(
       picked.metrics.map((x) => x.id),
     );

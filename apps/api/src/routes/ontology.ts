@@ -2,7 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { assert, digest } from "../security.js";
 import { resource, transaction, type Store } from "../store.js";
-import { effectiveObject, effectiveObjects } from "../context.js";
+import {
+  effectiveObject,
+  effectiveObjects,
+  recordLabel,
+} from "../context.js";
+export { recordLabel } from "../context.js";
+import { activeTypes, lazyRecord, objectView } from "../records.js";
 import {
   ObjectActionSchema,
   previewObjectAction,
@@ -30,26 +36,6 @@ export const ontologySchemas: RequestSchemas = {
   }),
 };
 
-// A readable name for a record: a person's name, a name or title, an email;
-// otherwise its type and a shortened key.
-const blank = (v: unknown) =>
-  v == null || ["", "None", "null", "NaN"].includes(String(v).trim());
-export function recordLabel(name: string, type: string, values: object) {
-  const entries = Object.entries(values).filter(([, v]) => !blank(v));
-  const find = (test: RegExp) => entries.find(([k]) => test.test(k))?.[1];
-  const first = find(/(^|_)first_?name$/i),
-    last = find(/(^|_)last_?name$/i);
-  if (first || last) return [first, last].filter(Boolean).join(" ");
-  const named =
-    find(/^(name|full_?name|display_?name|title|subject|company(_?name)?)$/i) ??
-    find(/(^|_)(name|title)$/i) ??
-    // Only the record's own email: requester_email names someone else.
-    find(/^e-?mail$/i);
-  if (named) return String(named).slice(0, 80);
-  const key = name.startsWith(type + " ") ? name.slice(type.length + 1) : name;
-  return `${type} ${key.length > 14 ? key.slice(0, 12) + "…" : key}`;
-}
-
 // Ontology: object views, neighbors and object actions (edits, create, link).
 export function registerOntologyRoutes(
   app: FastifyInstance,
@@ -59,18 +45,28 @@ export function registerOntologyRoutes(
   const { access } = deps;
   app.get("/api/v1/workspaces/:w/records/:logicalId", async (req: any) => {
     const a = await access(req),
-      ws = await store.get(a.scope, "workspace");
-    const r = await store.get(
-      a.scope,
-      `${ws?.data.activeGeneration}_${req.params.logicalId}`,
-    );
-    assert(
-      r?.kind === "object" && r.data.generation === ws?.data.activeGeneration,
-      "Record unavailable",
-      404,
-    );
-    const record = await effectiveObject(store, a.scope, r);
-    const neighbors = await store.neighbors(a.scope, r.id);
+      ws = await store.get(a.scope, "workspace"),
+      generation = ws?.data.activeGeneration,
+      id = generation ? `${generation}_${req.params.logicalId}` : "";
+    // Staged objects resolve directly; a lazy (un-staged) record resolves
+    // through the recordRef the explorer wrote when it paged the row.
+    const stored = await store.get(a.scope, id);
+    let record: any;
+    if (stored?.kind === "object" && stored.data.generation === generation)
+      record = await effectiveObject(store, a.scope, stored);
+    else if (
+      stored?.kind === "recordRef" &&
+      stored.data.generation === generation
+    ) {
+      const type = (await activeTypes(store, a.scope)).find(
+        (t) => t.name === stored.data.type,
+      );
+      record = type
+        ? await lazyRecord(store, a.scope, type, stored.data.key)
+        : undefined;
+    }
+    assert(record, "Record unavailable", 404);
+    const neighbors = await store.neighbors(a.scope, id);
     const related = [
       ...(await store.getMany(a.scope, neighbors)).values(),
     ].filter(
@@ -82,11 +78,11 @@ export function registerOntologyRoutes(
       history: (await store.list(a.scope, "audit"))
         .filter(
           (x) =>
-            x.data.objectId === r.id ||
-            x.data.objectId?.endsWith("_" + r.data.logicalId) ||
-            x.data.evidence?.logicalId === r.data.logicalId ||
-            x.data.evidence?.fromLogicalId === r.data.logicalId ||
-            x.data.evidence?.toLogicalId === r.data.logicalId,
+            x.data.objectId === id ||
+            x.data.objectId?.endsWith("_" + req.params.logicalId) ||
+            x.data.evidence?.logicalId === req.params.logicalId ||
+            x.data.evidence?.fromLogicalId === req.params.logicalId ||
+            x.data.evidence?.toLogicalId === req.params.logicalId,
         )
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
         .slice(0, 30),
@@ -218,7 +214,7 @@ export function registerOntologyRoutes(
           values: z.record(z.string(), z.unknown()),
         })
         .parse(req.body),
-      o = await store.get(a.scope, b.objectId);
+      o = await objectView(store, a.scope, b.objectId);
     assert(
       o?.kind === "object" &&
         o.data.generation ===
@@ -265,10 +261,14 @@ export function registerOntologyRoutes(
         );
         return prior;
       }
-      const o = await tx.get(b.objectId),
+      const stored = await tx.get(b.objectId),
+        o =
+          stored?.kind === "object"
+            ? stored
+            : await objectView(store, a.scope, b.objectId),
         ws = await tx.get("workspace");
       assert(
-        o?.kind === "object" && o.data.generation === ws?.data.activeGeneration,
+        o && o.data.generation === ws?.data.activeGeneration,
         "Object unavailable",
         404,
       );

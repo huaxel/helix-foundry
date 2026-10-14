@@ -1,7 +1,7 @@
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
-    <img src="docs/assets/logo-light.svg" alt="Helix Foundry" width="320">
+    <img src="docs/assets/logo-light.svg" alt="Meridian" width="320">
   </picture>
 </h1>
 
@@ -9,10 +9,12 @@
   <strong>Your company's data, connected into one ontology, on your own computer.</strong>
 </p>
 
-Helix Foundry is a local-first data workspace built on [HelixDB](https://docs.helix-db.com) and [DuckDB](https://duckdb.org). Connect the tools your company already runs on, such as your database, Stripe, WorkOS, PostHog, files and APIs, and it suggests one connected ontology across them that you can explore and ask questions of. There are no accounts and nothing to host: it runs on your computer, and AI runs locally by default.
+Meridian is a local-first data workspace built on [HelixDB](https://docs.helix-db.com) and [DuckDB](https://duckdb.org). Connect the tools your company already runs on, such as your database, Stripe, WorkOS, PostHog, files and APIs, and it suggests one connected ontology across them that you can explore and ask questions of. There are no accounts and nothing to host: it runs on your computer, and AI runs locally by default.
+
+> **Meridian** is a hard fork of [Helix Foundry](https://github.com/helixdb/helix-foundry). The product and packages are rebranded, but the Docker Compose project and data volumes intentionally keep the `helix-foundry` name so existing installs keep their data on upgrade. The fork also adds a **scale-up path**: an opt-in, OS-isolated streaming executor (`EXECUTOR_MODE=stream`) that queries multi-GB Parquet without a per-query copy, and lazy records that browse very large types as SQL instead of materialized objects. See [docs/OPERATIONS.md](docs/OPERATIONS.md#scale-architecture-streaming-executor).
 
 <p align="center">
-  <img src="docs/assets/hero.png" width="720" alt="The Helix Foundry Explorer showing accounts, users, invoices, subscriptions, campaigns, SSO connections and support tickets as one connected graph">
+  <img src="docs/assets/hero.png" width="720" alt="The Meridian Explorer showing accounts, users, invoices, subscriptions, campaigns, SSO connections and support tickets as one connected graph">
 </p>
 
 ## Get started with your coding agent
@@ -22,7 +24,7 @@ You need [Docker](https://docs.docker.com/get-started/get-docker/) installed and
 Paste this prompt into Claude Code, Codex, Cursor or any coding agent that can run terminal commands:
 
 ```text
-Set up Helix Foundry on this computer.
+Set up Meridian on this computer.
 
 Clone https://github.com/helixdb/helix-foundry.git (or use the copy I already
 have), cd into it, then read AGENTS.md and follow it to install, start and
@@ -64,7 +66,7 @@ It is ready when the health check answers:
 
 ```sh
 curl -fsS http://localhost:3001/api/health
-# {"ok":true,"service":"helix-foundry"}
+# {"ok":true,"service":"meridian"}
 ```
 
 Then open **http://localhost:3001**. The configured remote model endpoint is tested during setup; its weights remain on that server.
@@ -98,7 +100,7 @@ For another llama.cpp server, set `MODEL_ENDPOINT` to its reachable OpenAI-compa
 - **Memory:** Docker needs headroom for HelixDB and DuckDB imports; local model inference runs on the configured remote llama.cpp server.
 - **Node.js 24 and pnpm 10.7**, only for [local development](#local-development).
 
-Helix Foundry is developed and validated on macOS with Apple Silicon, and CI runs on Linux. Windows is untested, and the scripts need bash.
+Meridian is developed and validated on macOS with Apple Silicon, and CI runs on Linux. Windows is untested, and the scripts need bash.
 
 ## What you get
 
@@ -109,6 +111,7 @@ Helix Foundry is developed and validated on macOS with Apple Silicon, and CI run
 - **Home and Analyst:** key metrics, and answers to your questions backed by executed SQL with snapshot citations.
 - **Your choice of AI:** the configured llama.cpp OpenAI-compatible endpoint by default, Claude or OpenAI. AI-proposed changes are tested and wait for your review.
 - **Developer access:** OpenAPI at `/api/docs`, a TypeScript SDK, scoped API tokens, and backup and restore scripts.
+- **A scale-up path:** an opt-in streaming executor that reads multi-GB Parquet through views inside a per-job OS sandbox (column + row-group pushdown, no per-query copy), and lazy records that keep very large workspaces usable by browsing types as SQL. Off by default; the existing materialize path is unchanged.
 
 The full feature list, connector details and architecture are in the [guide](docs/GUIDE.md).
 
@@ -171,11 +174,11 @@ This fork serves one owner over their Tailscale network with password sign-in (s
 | [docs/GUIDE.md](docs/GUIDE.md)           | Features, connectors, AI and review, architecture, development and testing        |
 | [docs/DESIGN.md](docs/DESIGN.md)         | Existing visual standards, UI tokens, progress feedback and accessibility         |
 | [docs/onboarding.md](docs/onboarding.md) | Onboarding API routes, SDK methods and import limits                              |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Installation, diagnostics, change capture, backup, restore, upgrades, limits  |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Installation, diagnostics, change capture, backup, restore, upgrades, limits and the streaming scale architecture |
 | [docs/HOSTING.md](docs/HOSTING.md)       | Neon, Supabase and PlanetScale sign-in, scopes and permissions                    |
 | [docs/API.md](docs/API.md)               | REST API reference, authentication and the TypeScript SDK                         |
-| [docs/VALIDATION.md](docs/VALIDATION.md) | Test results, benchmarks and known limits from the September 2026 validation runs |
+| [docs/VALIDATION.md](docs/VALIDATION.md) | Test results, benchmarks and known limits from the September–October 2026 validation runs, including the scale architecture |
 
 ## License
 
-Helix Foundry is released under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
+Meridian is released under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.

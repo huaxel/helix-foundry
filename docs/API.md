@@ -18,6 +18,7 @@ Each area owns its section below; add new routes to your own section.
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET `/overview`                                         | Workspace and current catalog, sources, runs, proposals, published assets                                                                                                                                |
 | GET `/home`                                             | Workspace home summary: connection health, pipeline builds, open findings, pending reviews, ontology snapshot, recent activity, dashboards                                                               |
+| GET `/home/metrics` · POST `/home/metrics/regenerate`   | Home key metrics with their computed results. After an input's version changes, the previous values are served at once with `computing: true` while the affected metrics re-run in the background |
 | GET `/activity`                                         | Activity feed (jobs, runs, edits, publications) newest first; `kind` (comma-separated: sync, upload, pipeline, model, job, run, setup, edit, publish), `limit` (max 200), `offset`                       |
 | GET / PUT `/provider`                                   | Model provider settings; keys are never returned                                                                                                                                                         |
 | GET `/events`                                           | Authenticated server-sent events: `{runs, jobs, reviews}` with active or last-24h runs and jobs (id, kind, name, times and status fields only) and the pending review count; sent when something changes |
@@ -94,20 +95,20 @@ A proposal contains `bundle`, `validation`, `hash`, and `status`. The validation
 Build and package both workspace libraries with `pnpm build:sdk`, `pnpm -C packages/shared pack`, and `pnpm -C packages/sdk pack`. Install the resulting tarballs in your client project:
 
 ```ts
-import { FoundryClient } from "@helix-foundry/sdk";
+import { MeridianClient } from "@meridian/sdk";
 
-const foundry = new FoundryClient({
+const client = new MeridianClient({
   baseUrl: "http://localhost:3001",
-  workspaceId: process.env.FOUNDRY_WORKSPACE!,
-  token: process.env.FOUNDRY_TOKEN!,
+  workspaceId: process.env.MERIDIAN_WORKSPACE!,
+  token: process.env.MERIDIAN_TOKEN!,
 });
 
-const dataset = await foundry.ingest("Orders", [
+const dataset = await client.ingest("Orders", [
   { order_id: "o1", customer_id: "c1", amount: 42 },
 ]);
-const run = await foundry.requestAssistance("Create a revenue dashboard", {
+const run = await client.requestAssistance("Create a revenue dashboard", {
   resourceId: dataset.id,
 });
-// Use foundry.ask(question) or foundry.build(goal) for an explicit intent.
+// Use client.ask(question) or client.build(goal) for an explicit intent.
 // Review the resulting proposal and its validation before calling publish().
 ```

@@ -41,6 +41,7 @@ import {
   threadOf,
 } from "./context.js";
 import {
+  applyPartitionPrune,
   datasetsMap,
   inputsFor,
   proposalHash,
@@ -173,6 +174,9 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
             ]),
           ),
         ),
+      ...(partitionInfo[datasetTable(d.id)]
+        ? { partition: partitionInfo[datasetTable(d.id)] }
+        : {}),
     };
   };
   // A question only needs the datasets it could read: rank by token overlap
@@ -190,6 +194,21 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
             .filter(Boolean),
         )
       : stratifyDatasets(datasets, 30);
+  // Partitioned datasets expose their partition column + values so the
+  // model can prune to the partitions a scoped question needs; reading
+  // every partition stays the safe default when it names none.
+  const partitionInfo: Record<string, { column: string; values: string[] }> = {};
+  await Promise.all(
+    focal.map(async (d) => {
+      const v = await store.get(scope, d.data.activeVersion as string);
+      const vd = v?.data;
+      if (vd?.partitions?.length)
+        partitionInfo[datasetTable(d.id)] = {
+          column: vd.partitionColumn as string,
+          values: vd.partitions.slice(0, 200).map((p: any) => String(p.key)),
+        };
+    }),
+  );
   const inputVersions = Object.fromEntries(
     datasets.map((d) => [d.id, d.data.activeVersion]),
   );
@@ -491,11 +510,14 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         sql: z.string(),
         inputs: z.array(z.string()).min(1).max(20),
         assumptions: z.array(z.string()),
+        partitions: z
+          .record(z.string(), z.array(z.string()).min(1).max(500))
+          .optional(),
       });
       let plan = await ask(
         "analysis",
         analysis,
-        "Answer the question with one read-only SQL query. Return a short title and list unresolved business assumptions. Do not calculate results yourself. List every dataset the query reads in inputs. Stripe amounts (amount_* columns) are in cents: divide by 100.0 for currency. When joining tables with several rows per key (users and invoices of one account), aggregate each in its own subquery first so rows aren't multiplied.",
+        "Answer the question with one read-only SQL query. Return a short title and list unresolved business assumptions. Do not calculate results yourself. List every dataset the query reads in inputs. Stripe amounts (amount_* columns) are in cents: divide by 100.0 for currency. When joining tables with several rows per key (users and invoices of one account), aggregate each in its own subquery first so rows aren't multiplied. A partitioned dataset includes a partition field with its column and the available values; if the question is clearly scoped to specific values of that column, set partitions to { <table>: [values] } so only those partitions are read and note the scope in assumptions, otherwise omit it.",
       );
       const map = await datasetsMap(store, scope);
       // The sandbox loads only the query's inputs. Models sometimes join a
@@ -526,17 +548,36 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
       const query = async (p: z.infer<typeof analysis>) => {
         p.inputs = inputsOf(p);
         assert(p.inputs.length, "The query doesn't use any of your datasets.");
+        const baseInputs = await inputsFor(store, scope, p.inputs, map);
+        // Optional partition pruning: the model names the partition values a
+        // scoped question needs; we validate them against the stored manifest
+        // and read only those partition files. No/invalid declaration keeps
+        // every partition (correct, just unpruned).
+        const inputs = await applyPartitionPrune(
+          baseInputs,
+          p.partitions,
+          map,
+          store,
+          scope,
+        );
+        const didPrune = inputs.some(
+          (i: any, n: number) =>
+            i.files?.length &&
+            i.files.length < (baseInputs[n].files?.length || 0),
+        );
         await event(
           store,
           scope,
           id,
           "query",
-          "Executing query against declared dataset snapshots",
+          didPrune
+            ? "Executing query against pruned partition snapshots"
+            : "Executing query against declared dataset snapshots",
         );
         return execute({
           mode: "query",
           scope,
-          inputs: await inputsFor(store, scope, p.inputs, map),
+          inputs,
           sql: p.sql,
           version: randomUUID(),
           limit: 100,

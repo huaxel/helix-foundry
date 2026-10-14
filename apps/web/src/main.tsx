@@ -187,7 +187,7 @@ function App() {
     return (
       <div className="hf-app hf-center">
         <div role="alert" className="hf-gate-error">
-          <p>Couldn’t reach Helix Foundry. Check that the API is running.</p>
+          <p>Couldn’t reach Meridian. Check that the API is running.</p>
           <Button onClick={() => me.refetch()}>Retry</Button>
         </div>
       </div>

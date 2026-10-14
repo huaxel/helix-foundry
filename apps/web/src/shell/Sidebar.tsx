@@ -499,9 +499,9 @@ export function Sidebar({
   return (
     <div className={cx("hf-sidebar-inner", collapsed && "is-collapsed")}>
       <div className="hf-brand-row">
-        <Link to="/" className="hf-brand" aria-label="Helix Foundry home">
+        <Link to="/" className="hf-brand" aria-label="Meridian home">
           <span className="hf-brand-name">
-            helix<span>foundry</span>
+            Meridian
           </span>
         </Link>
         <button

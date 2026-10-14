@@ -7,6 +7,7 @@ export async function execute(job: Execution): Promise<{
   profile: DatasetProfile;
   version: string;
   rows: Record<string, any>[];
+  partitions?: { key: string; file: string; rows: number; size: number }[];
 }> {
   const { statusCode, body } = await new Promise<{
     statusCode: number;

@@ -8,7 +8,7 @@ if (
   !config.allowNetwork
 )
   throw new Error(
-    `Helix Foundry has no sign-in, so it only listens on this computer. Use HOST=127.0.0.1, or set ALLOW_NETWORK_ACCESS=true when something in front of it keeps it private (HOST is ${config.host}).`,
+    `Meridian has no sign-in, so it only listens on this computer. Use HOST=127.0.0.1, or set ALLOW_NETWORK_ACCESS=true when something in front of it keeps it private (HOST is ${config.host}).`,
   );
 await store.init();
 const app = await createApp(store);

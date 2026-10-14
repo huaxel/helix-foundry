@@ -105,7 +105,7 @@ export default function SettingsPage() {
                 Tokens are scoped to this workspace. Copy once and store
                 securely.
               </p>
-              <pre className="sql-block">{`import { FoundryClient } from '@helix-foundry/sdk';\n\nconst foundry = new FoundryClient({\n  baseUrl: '${location.origin}',\n  workspaceId: '${id}',\n  token: process.env.FOUNDRY_TOKEN,\n});\n\nconst datasets = await foundry.list('dataset');`}</pre>
+              <pre className="sql-block">{`import { MeridianClient } from '@meridian/sdk';\n\nconst client = new MeridianClient({\n  baseUrl: '${location.origin}',\n  workspaceId: '${id}',\n  token: process.env.MERIDIAN_TOKEN,\n});\n\nconst datasets = await client.list('dataset');`}</pre>
             </form>
           </section>
           <section className="panel settings-panel">
@@ -118,7 +118,7 @@ export default function SettingsPage() {
               <a
                 className="button"
                 href={`/api/v1/workspaces/${id}/definitions/export`}
-                download="foundry-definitions.json"
+                download="meridian-definitions.json"
               >
                 <Download size={15} /> Export definitions
               </a>

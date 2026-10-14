@@ -1,0 +1,38 @@
+# Opt-in overlay for the STREAMING executor (the L2 scale-up).
+#
+# The streaming path runs each query inside a per-job user+mount namespace
+# (`unshare -rm`): the executor bind-mounts only that job's authorized Parquet
+# files and masks the data roots + system config, so the query streams over a
+# view (column + row-group pushdown, no per-query full copy) while the namespace
+# is the isolation boundary.
+#
+# Creating a user namespace (CLONE_NEWUSER) is blocked by Docker's *default*
+# seccomp profile, so this overlay sets the executor's seccomp to a *bundled custom
+# profile* (`seccomp-stream.json`) rather than `unconfined`. That profile is Docker's
+# standard default allow-list (deny-by-default, ~380 syscalls) plus exactly two
+# additions:
+#   - `unshare`, filtered to flags that are a subset of {CLONE_NEWUSER, CLONE_NEWNS}
+#   - `mount`, for the per-job `mount --bind` operations
+# Everything else Docker's default blocks stays blocked (no `bpf`, `keyctl`, module
+# loading, ...), so it is meaningfully tighter than `seccomp=unconfined` while still
+# permitting the namespace setup the streaming path needs. It is scoped to the executor
+# container ONLY — the container that already runs untrusted (model-generated) SQL with
+# `cap_drop: [ALL]`, i.e. the sandbox. `no-new-privileges` is kept (verified:
+# CLONE_NEWUSER works under no-new-privileges). The profile was generated from the OCI
+# default and validated in a real container (streaming queries + in-container escape
+# probes; see `VALIDATION.md`). On an older Docker that cannot load the custom profile,
+# fall back to `seccomp=unconfined` (a valid but looser allowance).
+#
+# Usage:
+#   EXECUTOR_MODE=stream docker compose -f compose.yaml -f compose.stream.yaml up -d
+#
+# The executor self-tests for user namespaces at boot and fails streaming jobs
+# loudly (with a clear message) if the allowance is missing, so this overlay is
+# the difference between "streaming works" and "streaming refuses to run".
+services:
+  executor:
+    environment:
+      EXECUTOR_MODE: stream
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp-stream.json

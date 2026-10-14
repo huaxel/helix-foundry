@@ -57,13 +57,15 @@ Browser acceptance now starts a separate installation on ports 3101/3102/5174 wi
 ## Remaining validation and MVP limits
 
 - Claude/OpenAI live checks require supplied credentials. No hosted credentials were available, so only protocol fixtures ran.
-- The combined 16 GB local-inference target and an installation constrained to 8 GB still need dedicated peak-memory/load certification. The million-row benchmark does not certify million-object ontology publication.
+- The combined 16 GB local-inference target and an installation constrained to 8 GB still need dedicated peak-memory/load certification. The million-row benchmark does not certify million-object ontology publication or the multi-GB streaming query path.
 - PostgreSQL 16 multi-table imports, authentication/TLS failures and schema drift were verified in an isolated container. Deployment-specific certificate chains and a real S3 service still require environment integration testing.
 - Onboarding supports multi-table and multi-file selection, retaining one source record per table/file. Users explicitly choose selections; related tables are suggested from discovered foreign keys.
 - The Advanced ontology graph shows the first 100 objects. Records uses 50-row pages with search and exact filters; relationship selection searches the workspace with 50 results at a time. Plain newest-first resource pages are served from storage-level ordered slices with batched enrichment; searched, filtered, or custom-sorted lists (records, datasets) still read their collections for exactness, so very large ontology deployments with heavy search use should be watched.
 - Visual DAGs cover common relational transformations; specialized SQL remains editable. Rejected-row evidence is available for single-input pipelines that retain a candidate key. Ambiguous joins still require business review.
 - Background assistance prepares repair drafts after changes. Repairs are bounded and may still need a larger model or developer edits. It never publishes automatically.
 - Action history and imported values are separate. Rollback revalidates the previous definitions against current snapshots and rematerializes them, preserving manual overlays; it does not undo business actions.
+- The streaming executor's isolation is certified (escape suite, real container), and its multi-GB performance is measured on the host **and inside the Docker container** under the shipping stream security config (below). The executor now ships a custom seccomp profile — tighter than `unconfined` — in `seccomp-stream.json` (see the in-container subsection).
+- Partitioned ingestion (per-partition snapshots + manifest, pruned per query) is not yet built; large datasets are single Parquet snapshots pruned by input filters and DuckDB row-group statistics.
 - Query execution is isolated and capped; this release does not provide distributed transactions with external sources, CDC, SSO, billing, or per-record LLM enrichment.
 
 ## Architecture and performance hardening (11 October 2026)
@@ -72,7 +74,7 @@ Static review plus targeted fixes, all behavior-preserving unless noted. `pnpm t
 
 - **Store v2 + query primitives.** `status` and `updatedAt` are promoted to indexed top-level HelixDB properties on every write, with a one-time v1-to-v2 backfill (docs byte-identical, revisions untouched). New `getMany` (single-batch reads) and `listPage` (status filter, newest-first ordering, offset/limit, totals) on both `HelixStore` and `MemoryStore`. Verified against a real HelixDB v0.0.6 instance: 14/14 checks including orphan recovery of pre-upgrade queued/running jobs, doc preservation, pagination partitioning, and idempotent re-init. Verification caught a real boot-blocking bug first: asc+desc range indexes on one field conflict on the server, so only the desc index is created (non-fatal guarded).
 - **Hot loops indexed.** Worker tick claims queued/running runs+jobs via the status index (no full scans). The 2s live-events stream uses status-indexed active plus a recency-bounded scan and indexed ready-proposal count (exact union). Home fetches bounded collections full plus coverage-exact jobs and 300-item runs/audits windows. Per-question token-budget checks use date-prefix scans (exact, up to 20 full scans eliminated per question). The assistant's prior-turn chat history reads a 200-newest `updatedAt desc` run window instead of all runs — only the last 4 same-thread turns are used, so the bound far exceeds need.
-- **Compiled production runtime.** `pnpm build:server` emits NodeNext JS to `dist/`; app/worker/executor run from compiled entrypoints (tsx stays dev-only). The built `helix-foundry:local` image was verified in situ: correct CMD, dist payload present, modules load under plain node, executor boots and serves `/health`.
+- **Compiled production runtime.** `pnpm build:server` emits NodeNext JS to `dist/`; app/worker/executor run from compiled entrypoints (tsx stays dev-only). The built `meridian:local` image was verified in situ: correct CMD, dist payload present, modules load under plain node, executor boots and serves `/health`.
 - **Module splits.** `assistant.ts` (2170 lines) into `assistant/{context,provider,validate,proposals,build}` and `discovery.ts` (1794) into `discovery/{names,keys,suggest,columns,confirm,bundle}`, both behind stable facades; no importer changes, no logic changes.
 - **Security/deploy.** Tailnet port moved to opt-in `compose.tailnet.yaml` (fail-closed without `AUTH_PASSWORD`/`TAILSCALE_IP`); hardcoded machine IP removed. Static web assets under `/assets/*` served immutable (year cache) with a regression test; the shell stays fresh.
 - **Attempted and reverted.** A short-circuit for explicit metrics regeneration was rejected by the suite (regenerate is an unconditional editor action by tested contract); reverted with no residual change.
@@ -84,3 +86,75 @@ The migration was rehearsed on `scripts/rehearse-v2.mts` against a scratch Helix
 - **Flaky HelixDB cascades planner (pinned v0.0.6).** The 100-row write batches intermittently hit `internal_planner_error` ("unsupported cascades plan") — a transient server-side optimizer race, not a 409, so it was not retried and would crash a backfill or 500 a normal save. `commit()` now treats it (and `/planner error|cascades/`) as retryable, like a conflict.
 
 Live repair: the 4,516 un-promoted rows were re-promoted in place (idempotent; each row re-read inside the CAS lock via `tx.get` before re-put so the active worker's writes were never clobbered). Final state verified on the running install: schema version 2, and all **9,135** nodes across the three scopes carry top-level `status`/`updatedAt` that exactly match their docs (`missing=0`, `mismatch=0`). A two-process integration test (real `server.js`/`worker.js` entrypoints racing on a scratch v1 DB, 754 rows) confirms the fix: the worker alone does **not** bump the version (it waits), and concurrent app+worker leaves every row promoted with schema 2. Scratch DBs and test fixtures were removed. `pnpm typecheck`, `pnpm build:server`, and the full suite (221 tests) pass.
+
+## Scale architecture validation (October 2026)
+
+The hard fork added a scale-up path so the same single-server release can serve workspaces whose datasets are tens of GB rather than a ≤1M-row MVP. Three layers, each validated on its own terms; the combined "60 GB Parquet in a production deployment" figure is **not** certified (see below).
+
+- **L2 — streaming, OS-isolated executor** (`EXECUTOR_MODE=stream`). The query path reads its inputs through `CREATE VIEW ... read_parquet(...)` inside a per-job user+mount namespace (`unshare -rm`) that bind-mounts only the job's authorized files and masks the data roots and system config. Validated by `tests/executor-sandbox.test.ts` (opt-in, `TEST_EXECUTOR_SANDBOX=1`): seven canary-based tests driving the **real** server → `unshare` → runner → engine, asserting on leaked data rather than on the throw. They cover an authorized snapshot reading correctly, cross-scope `read_parquet`, host-file `read_text`, `COPY TO` a masked `/data` path (file not created), and absolute / `../` / symlink `sourcePath` escapes (all rejected, no leak). Verified in the real executor container: a legit view query returns correct rows while cross-scope and `/etc` escapes are blocked. Network egress is a deployment property (the execution network is `internal: true`), so it is not unit-tested. Measured on a real 3.91 GB Parquet fixture (30 M rows, high-entropy columns; recipe and script below): the streaming path answers filtered and full aggregates in **~0.7 s with ~190 MB peak process memory and zero temp disk**, versus **21–40 s and 1–8.3 GB peak memory (plus up to 7.4 GB of temp spill) for materialize** — a 30–60× wall-time reduction at the production single-threaded, 768 MB default configuration.
+- **L1 — pre-aggregated, stale-while-revalidating Home metrics.** On an input-version change, `loadMetrics` answers from the last computed values with a `computing` flag and a background job recomputes only the metrics whose dataset changed. The job self-claims its target and commits guarded by the pending marker, so it converges even when a change lands in the gap after its commit. A regression test (pre-fix: 315 loop iterations over 10 s without converging; post-fix: exactly 2) pins the convergence. Composes with L2: with `EXECUTOR_MODE=stream` the background scans stream over Parquet instead of copying it.
+- **L3 — lazy records.** Beyond 1,000,000 staged rows, onboarding publishes dashboard-only; a type with no staged rows is served as SQL over its active snapshot (paged, filtered, searched, sorted in the executor; constant memory in the API). Validated by `tests/records-lazy.test.ts` (5 tests): paging/filter/search/sort via SQL, detail-by-logicalId (with a 404 for a never-paged row), edits through the normal overlay preview/execute flow, manual-record create (duplicate key 409s, a new key appears and the total increments), and the staged path unchanged for small workspaces.
+
+All three layers pass with `pnpm typecheck`, the full default suite (233 tests, opt-in integration suites skipped as before), and `pnpm build`. No live installation data was used; the sandbox and lazy-record suites use in-memory stores and temporary loopback ports.
+
+**Not certified at scale (open):** partitioned ingestion with per-query partition pruning; and peak-memory certification for a 60 GB working set. See the "Scale architecture (streaming executor)" section of `OPERATIONS.md` for how to enable and tune the path.
+
+### Streaming vs materialize on a 3.9 GB Parquet fixture (October 2026)
+
+| Case | Wall (s) | Peak process-tree RSS | Peak temp disk | Result check |
+| ---- | -------: | --------------------: | -------------: | ------------ |
+| materialize, production defaults (768 MB / 2 GB) — filtered aggregate | 40.3 | 1.0 GB | 7.4 GB | exact match |
+| materialize, raised (16 GB / 4 GB) — filtered aggregate | 20.9 | 8.3 GB | 0 | exact match |
+| materialize, raised (16 GB / 4 GB) — full aggregate | 21.3 | 8.3 GB | 0 | exact match |
+| stream, production defaults (768 MB / 2 GB) — filtered aggregate | 0.7 | 190 MB | 0 | exact match |
+| stream, production defaults (768 MB / 2 GB) — full aggregate | 0.7 | 193 MB | 0 | exact match |
+
+**Fixture.** 30 M rows × 9 mixed-type columns (BIGINT, high-entropy VARCHAR×3, DOUBLE, TIMESTAMP, a 12-value VARCHAR `region` for the filter predicate), written ZSTD — **3.91 GB on disk**, deliberately not pathologically compressible. Generated by `scripts/bench-scale-generate.mts`, which also writes per-region ground-truth counts. Every case's result is checked against that ground truth before it is accepted.
+
+**Method.** The real executor `dist` build runs as its own process over HTTP (the same code path as the container), one job at a time, `DUCKDB_THREADS=1` and the production `DUCKDB_MEMORY=768MB` / `DUCKDB_TEMP_LIMIT=2GB` defaults unless the case says otherwise. Wall time covers the full `/execute` round trip; peak RSS is the polled maximum of the server-plus-runner process tree; peak temp is the polled maximum of the job's spill directory. Queries: filtered aggregate (`WHERE region = 'us-east'`, ~1/12 of rows) and full aggregate (`GROUP BY region`), both single-group-shape results, so the work is dominated by scanning the snapshot.
+
+**Reading the numbers.** In materialize mode the per-query cost is the full 3.9 GB copy into an in-memory table (~19–20 s of the 21 s wall time; 8.3 GB resident) plus the query itself; with the production 768 MB default the copy cannot fit and spills heavily (7.4 GB of temp, 40 s). In stream mode the aggregate reads only the columns it touches (`region` + `amount`, ~250 MB of the 3.9 GB file) through the view — projection and row-group pushdown — so wall time is ~0.7 s with ~190 MB peak and no spill, and the cost grows with the *queried* columns, not the file size. Extrapolated linearly, a 60 GB working set keeps the streaming aggregates in the low tens of seconds at these settings, while materialize needs ~128 GB of resident memory (or ~100+ GB of temp spill) for the same table.
+
+**Caveats.** Measured on the host (WSL2, 12 cores, 23 GB RAM) **and** inside a disposable Docker container running the exact shipping stream security config (the custom `seccomp-stream.json` profile, `cap_drop: [ALL]`, `no-new-privileges`, 2 GB memory, 1.5 CPUs, pids limit 128) — in-container numbers are in the next subsection; page cache warm (the fixture was freshly written); single-threaded DuckDB (the production default) — raising `DUCKDB_THREADS` shrinks every row of the table roughly in proportion. `default-filter`'s 7.4 GB temp use exceeds the 2 GB `max_temp_directory_size` setting; the query still completed, but treat observed spill, not the cap, as the planning number. Before benchmarking, rebuild the executor (`pnpm build:server`): an earlier run against a stale `dist` silently measured the materialize path for every case — the *shipped Docker image* had the same problem (its baked-in `dist` predated the stream code), so a fresh image build is a prerequisite for the in-container run below.
+
+**Recipe.**
+
+```sh
+pnpm build:server                                        # fresh dist
+pnpm exec tsx scripts/bench-scale-generate.mts 30000000  # ~3.9 GB fixture in ~/meridian-bench
+pnpm exec tsx scripts/bench-scale.mts                   # all five cases
+# single case: pnpm exec tsx scripts/bench-scale.mts stream-full
+rm -rf ~/meridian-bench                                  # ~4 GB
+```
+
+### Inside the Docker container (shipping stream security config)
+
+The same 3.9 GB fixture was run through a **disposable** executor container built fresh from the current repo and started with the exact security envelope the `compose.stream.yaml` overlay ships:
+
+| Case | HTTP | Wall (s) | Rows ok |
+| ---- | ----: | -------: | ------- |
+| stream — filtered aggregate | 200 | 0.7–1.0 | exact match |
+| stream — full aggregate | 200 | 0.6–0.7 | exact match |
+
+Container config: `--cap-drop ALL --security-opt no-new-privileges:true --security-opt seccomp=./seccomp-stream.json --memory 2g --cpus 1.5 --pids-limit 128`, `EXECUTOR_MODE=stream`, production `DUCKDB_MEMORY=768MB` / `DUCKDB_THREADS=1` / `DUCKDB_TEMP_LIMIT=2GB`, fixture mounted read-only at `DATA_DIR`. In-container peak memory (the container's own cgroup `memory.peak` high-water mark) was **~86 MB** against the 2 GB limit. This is the important result: the per-job user+mount namespace (`unshare -rm`) — the thing Docker's *default* seccomp blocks — **works inside the container under the bundled `seccomp-stream.json` profile** (deny-by-default + `unshare` restricted to user+mount namespaces + `mount`), and the 3.9 GB file is streamed (not copied) with a small transient footprint. The profile is a strict subset of `unconfined`, so the container is no looser than it needs to be (a regression test, `tests/seccomp-profile.test.ts`, pins its safety properties).
+
+Isolation was re-probed in-container (mirroring the host escape suite): `read_text('/etc/hostname')` leaked **no** hostname (masked), and `COPY (…) TO '/tmp/evil-canary.csv'` returned 422 and created **no** file.
+
+**Recipe.**
+
+```sh
+docker build -t meridian:bench .                         # fresh image (do NOT reuse a stale one)
+docker run -d --name meridian-bench-executor \
+  --cap-drop ALL --security-opt no-new-privileges:true --security-opt seccomp=./seccomp-stream.json \
+  --memory 2g --cpus 1.5 --pids-limit 128 \
+  -e INTERNAL_KEY=<key> -e DATA_DIR=/data -e LOCAL_DATA_PATH=/mnt/parquet \
+  -e EXECUTOR_HOST=0.0.0.0 -e EXECUTOR_PORT=3002 -e EXECUTOR_MODE=stream \
+  -e DUCKDB_MEMORY=768MB -e DUCKDB_THREADS=1 -e DUCKDB_TEMP_LIMIT=2GB -e DUCKDB_TEMP_DIR=/tmp \
+  -e EXECUTOR_SANDBOX_ROOT=/tmp/executor-sbx \
+  -v ~/meridian-bench/data:/data:ro -v ~/meridian-bench/local-mount:/mnt/parquet:ro \
+  -p 127.0.0.1:3902:3002 --entrypoint node meridian:bench dist/services/executor/src/server.js
+BENCH_EXECUTOR_URL=http://127.0.0.1:3902 BENCH_EXECUTOR_KEY=<key> \
+  pnpm exec tsx scripts/bench-scale-container.mts
+docker exec meridian-bench-executor cat /sys/fs/cgroup/memory.peak   # in-container peak bytes
+docker rm -f meridian-bench-executor
+```

@@ -62,6 +62,7 @@ export function registerDataRoutes(
           name: z.string().min(1),
           rows: z.array(z.record(z.string(), z.unknown())).min(1).max(10000),
           datasetId: z.string().optional(),
+          partitionColumn: z.string().min(1).max(100).optional(),
         })
         .parse(req.body);
     if (b.datasetId)
@@ -70,7 +71,15 @@ export function registerDataRoutes(
         "Dataset unavailable",
         404,
       );
-    return ingestRows(store, a.scope, b.name, b.rows, undefined, b.datasetId);
+    return ingestRows(
+      store,
+      a.scope,
+      b.name,
+      b.rows,
+      undefined,
+      b.datasetId,
+      b.partitionColumn,
+    );
   });
   app.post("/api/v1/workspaces/:w/upload", async (req, reply) => {
     const a = await access(req, "editor"),
@@ -91,11 +100,22 @@ export function registerDataRoutes(
     );
     try {
       assert(!part.file.truncated, "File exceeds 256 MB limit");
+      // Optional partition-by column (low cardinality) so the imported snapshot
+      // is split into per-partition Parquet and pruned per query.
+      const pc = (req.query as Record<string, unknown>)?.partitionColumn;
+      const partitionColumn =
+        typeof pc === "string" && pc.length >= 1 && pc.length <= 100
+          ? pc
+          : undefined;
       return await ingestFile(
         store,
         a.scope,
         part.filename.replace(/\.[^.]+$/, ""),
         file,
+        undefined,
+        undefined,
+        undefined,
+        { partitionColumn },
       );
     } catch (error) {
       await removeStagedInput(a.scope, file);
@@ -160,6 +180,10 @@ export function registerDataRoutes(
       assert(ds?.kind === "dataset", "Dataset unavailable", 404);
       const version = await store.get(a.scope, ds.data.activeVersion);
       assert(version?.kind === "version", "Dataset version unavailable", 404);
+      if (version.data.partitions)
+        return reply.code(409).send({
+          error: "Partitioned datasets are not exported as a single file",
+        });
       reply
         .header("content-disposition", `attachment; filename="dataset.parquet"`)
         .type("application/octet-stream");
@@ -204,6 +228,7 @@ export function registerDataRoutes(
             secret: seal(resolved.config),
             hostedProvider: resolved.provider,
             discovery,
+            partitionColumn: b.partitionColumn,
             ...sourceSyncDefaults(b.kind, b.schedule),
           }),
         ),

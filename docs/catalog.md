@@ -1,6 +1,6 @@
 # Data catalogs (general import)
 
-Helix Foundry speaks one general catalog format (v1). Any catalog — maintained
+Meridian speaks one general catalog format (v1). Any catalog — maintained
 anywhere, in any upstream system — can be imported to help discovery: business
 names replace slugs, curated joins become links, asserted keys place keyless
 tables. Helix never assumes a specific upstream catalog; converters live with

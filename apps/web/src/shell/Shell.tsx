@@ -34,7 +34,7 @@ function RouteAnnouncer() {
       const heading = document.querySelector<HTMLElement>("#main h1");
       setText(
         heading?.textContent?.trim() ||
-          document.title.replace(/ · Helix Foundry$/, ""),
+          document.title.replace(/ · Meridian$/, ""),
       );
       const active = document.activeElement;
       if (heading && (!active || active === document.body)) {
@@ -154,9 +154,9 @@ export function Shell({
               >
                 <Menu size={18} aria-hidden />
               </button>
-              <Link to="/" className="hf-brand" aria-label="Helix Foundry home">
+              <Link to="/" className="hf-brand" aria-label="Meridian home">
                 <span className="hf-brand-name">
-                  helix<span>foundry</span>
+                  Meridian
                 </span>
               </Link>
               <span className="hf-mobile-ws">{current.name}</span>

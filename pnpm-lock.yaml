@@ -135,7 +135,7 @@ importers:
 
   packages/sdk:
     dependencies:
-      '@helix-foundry/shared':
+      '@meridian/shared':
         specifier: workspace:*
         version: link:../shared
 

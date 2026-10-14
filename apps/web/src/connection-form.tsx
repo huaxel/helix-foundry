@@ -86,6 +86,7 @@ export function ConnectionForm({
         config: connectionConfig,
         selections: selections.slice(i, i + MAX_SELECTION),
         schedule: form.schedule || null,
+        partitionColumn: form.partitionColumn || undefined,
         operationId: i === 0 ? operationId : `${operationId}_${i}`,
       });
     }
@@ -125,6 +126,14 @@ export function ConnectionForm({
               (e.currentTarget.elements.namedItem("files") as HTMLInputElement)
                 .files || [],
             );
+            const partitionColumn = (
+              e.currentTarget.elements.namedItem(
+                "partitionColumn",
+              ) as HTMLInputElement
+            )?.value?.trim();
+            const pcQuery = partitionColumn
+              ? `?partitionColumn=${encodeURIComponent(partitionColumn)}`
+              : "";
             action.run(async () => {
               for (const file of files) {
                 const key = file.name + file.size + file.lastModified;
@@ -133,7 +142,7 @@ export function ConnectionForm({
                 const body = new FormData();
                 body.set("file", file);
                 await api(
-                  `/workspaces/${id}/onboarding/uploads`,
+                  `/workspaces/${id}/onboarding/uploads${pcQuery}`,
                   body,
                   "POST",
                   { "idempotency-key": uploadKeys.current.get(key)! },
@@ -153,9 +162,18 @@ export function ConnectionForm({
               accept=".csv,.json,.jsonl,.parquet"
             />
           </label>
+          <label className="span2">
+            Partition by column (optional)
+            <input
+              name="partitionColumn"
+              type="text"
+              placeholder="e.g. region, month"
+            />
+          </label>
           <p className="muted span2">
             Up to 256 MB per file. Complete files are imported before preparing
-            your view.
+            your view. Set a low-cardinality partition column to split large
+            files into per-value snapshots that queries can prune.
           </p>
           <button className="button primary" disabled={action.pending}>
             {action.pending ? "Uploading files…" : "Import files"}
@@ -231,6 +249,7 @@ Content-Type: application/json
                     name: connectionName,
                     config: { ...connectionConfig, ...selections[0] },
                     schedule: form.schedule || null,
+                    partitionColumn: form.partitionColumn || undefined,
                   },
                   "PUT",
                 );
@@ -243,6 +262,7 @@ Content-Type: application/json
                   config: connectionConfig,
                   selections,
                   schedule: form.schedule || null,
+                  partitionColumn: form.partitionColumn || undefined,
                   operationId: operation.current,
                 });
               }
@@ -772,6 +792,21 @@ Content-Type: application/json
               <pre>{JSON.stringify(preview.columns, null, 2)}</pre>
             </details>
           )}
+          {discovered &&
+            ["local", "s3", "postgres", "mysql"].includes(kind) && (
+              <label className="span2">
+                Partition by column (optional)
+                <input
+                  type="text"
+                  placeholder="e.g. region, month"
+                  value={form.partitionColumn || ""}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, partitionColumn: e.target.value }));
+                    operation.current = crypto.randomUUID();
+                  }}
+                />
+              </label>
+            )}
           {discovered && (
             <button
               className="button primary"

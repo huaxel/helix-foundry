@@ -374,6 +374,9 @@ export type HomeMetrics = {
   source: "ai" | "computed";
   aiReady: boolean;
   generating: boolean;
+  // Set while the stored queries re-run in the background after an input
+  // changed; the previous values are served until the update lands.
+  computing?: boolean;
   error?: string;
   generatedAt?: string;
   computedAt?: string;

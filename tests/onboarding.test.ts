@@ -294,6 +294,40 @@ it.each(["mysql", "postgres"])(
     expect((await onboardingState(store, scope)).inputsReady).toBe(true);
   },
 );
+it("persists the optional partition column on onboarding sources", async () => {
+  const payload = {
+    kind: "postgres",
+    name: "Sales",
+    config: { database: "sales", password: "secret-test" },
+    selections: [{ table: "customers", schema: "public" }],
+    operationId: "partition-connection-1",
+    partitionColumn: "region",
+  };
+  const r = await request("POST", "/onboarding/sources", payload);
+  expect(r.statusCode, r.body).toBe(200);
+  expect(r.json()).toHaveLength(1);
+  let sources = await store.list(scope, "source");
+  expect(sources).toHaveLength(1);
+  // The created source persisted the partition column.
+  expect(sources[0].data.partitionColumn).toBe("region");
+
+  // A retest/update through PUT changes the partition column.
+  const sourceId = sources[0].id;
+  const put = await request(
+    "PUT",
+    `/onboarding/sources/${sourceId}`,
+    {
+      kind: "postgres",
+      name: "Sales",
+      config: { database: "sales", password: "secret-test" },
+      schedule: null,
+      partitionColumn: "month",
+    },
+  );
+  expect(put.statusCode, put.body).toBe(200);
+  sources = await store.list(scope, "source");
+  expect(sources[0].data.partitionColumn).toBe("month");
+});
 it("blocks stale approvals when goal, selection or source versions change, including definition retests", async () => {
   await inputs();
   model();
@@ -399,8 +433,7 @@ it("stages asynchronous uploads durably, reuses retries and refuses canceled sna
       undefined,
       job.data.datasetId,
       job.id,
-      undefined,
-      job.id,
+      { jobId: job.id },
     ),
   ).rejects.toThrow("Import canceled");
   expect(await store.list(scope, "dataset")).toHaveLength(0);
@@ -413,8 +446,7 @@ it("stages asynchronous uploads durably, reuses retries and refuses canceled sna
     undefined,
     job.data.datasetId,
     job.id,
-    undefined,
-    job.id,
+    { jobId: job.id },
   );
   await ingestFile(
     store,
@@ -424,8 +456,7 @@ it("stages asynchronous uploads durably, reuses retries and refuses canceled sna
     undefined,
     job.data.datasetId,
     job.id,
-    undefined,
-    job.id,
+    { jobId: job.id },
   );
   expect(await store.list(scope, "dataset")).toHaveLength(1);
   expect(await store.list(scope, "version")).toHaveLength(1);

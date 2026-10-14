@@ -38,7 +38,7 @@ export default function Assistant({
   };
   return (
     <Dialog
-      title={context.title ? "Ask about " + context.title : "Ask Foundry"}
+      title={context.title ? "Ask about " + context.title : "Ask Meridian"}
       description="Your question opens as a chat, where you can ask follow-ups."
       className="an-ask-dialog"
       onClose={onClose}

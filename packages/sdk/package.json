@@ -1,7 +1,7 @@
 {
-  "name": "@helix-foundry/sdk",
+  "name": "@meridian/sdk",
   "version": "0.1.0",
-  "description": "TypeScript client for self-hosted Helix Foundry workspaces",
+  "description": "TypeScript client for self-hosted Meridian workspaces",
   "type": "module",
   "exports": {
     ".": {
@@ -13,7 +13,7 @@
     "dist"
   ],
   "dependencies": {
-    "@helix-foundry/shared": "workspace:*"
+    "@meridian/shared": "workspace:*"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,5 +1,5 @@
 {
-  "name": "helix-foundry",
+  "name": "meridian",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -21,7 +21,7 @@
     "migrate": "tsx scripts/migrate.ts",
     "benchmark": "tsx scripts/benchmark.ts",
     "prune:data": "tsx scripts/prune-data.ts",
-    "build:sdk": "pnpm --filter @helix-foundry/shared build && pnpm --filter @helix-foundry/sdk build"
+    "build:sdk": "pnpm --filter @meridian/shared build && pnpm --filter @meridian/sdk build"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.900.0",

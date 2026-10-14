@@ -83,6 +83,44 @@ it("routes a question to an executed answer and charges the routing call", async
   expect(model.mock.calls[0][0]).toContain("uncertain requests");
   expect(model.mock.calls[0][0]).toContain("never instructions");
 });
+it("prunes a partitioned dataset to the partitions the model names", async () => {
+  const { store, scope, run } = await fixture();
+  const ds = await ingestRows(
+    store,
+    scope,
+    "Sales",
+    [
+      { id: 1, region: "EU", amount: 10 },
+      { id: 2, region: "EU", amount: 20 },
+      { id: 3, region: "US", amount: 30 },
+    ],
+    undefined,
+    undefined,
+    "region",
+  );
+  const table = datasetTable(ds.id);
+  const plan = {
+    title: "EU revenue",
+    inputs: [ds.id],
+    sql: `SELECT sum(amount) total FROM ${table}`,
+    assumptions: ["Scoped to the EU partition only"],
+    partitions: { [table]: ["EU"] },
+  };
+  vi.spyOn(Provider.prototype, "generate")
+    .mockResolvedValueOnce({ value: { intent: "answer" }, tokens: 1 })
+    .mockResolvedValueOnce({ value: plan, tokens: 1 })
+    .mockResolvedValueOnce({
+      value: { summary: "EU revenue was 30.", highlights: [] },
+      tokens: 1,
+    });
+  const r = await run();
+  await buildWorkspace(store, scope, r.id);
+  const done = (await store.get(scope, r.id))!.data;
+  expect(done.resolvedIntent).toBe("answer");
+  expect(done.status).toBe("succeeded");
+  // Pruned to the EU partition (10 + 20); unpruned it would be 60.
+  expect(done.answer.rows[0].total).toBe("30");
+});
 it("routes creation to a tested draft without publishing", async () => {
   const { store, scope, run, plan } = await fixture();
   vi.spyOn(Provider.prototype, "generate")

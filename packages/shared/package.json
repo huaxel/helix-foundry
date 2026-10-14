@@ -1,5 +1,5 @@
 {
-  "name": "@helix-foundry/shared",
+  "name": "@meridian/shared",
   "version": "0.1.0",
   "type": "module",
   "exports": {

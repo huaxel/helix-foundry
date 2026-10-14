@@ -108,7 +108,7 @@ describe("workspace boundaries and actions", () => {
           resource(
             "global",
             "installation",
-            "Helix Foundry",
+            "Meridian",
             { ownerId: "owner-1" },
             "installation",
           ),

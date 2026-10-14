@@ -40,7 +40,7 @@ export class RouteErrorBoundary extends Component<
             }
             text={
               stale
-                ? "Reload to get the latest version of Helix Foundry."
+                ? "Reload to get the latest version of Meridian."
                 : error.message ||
                   "Something went wrong while showing this page."
             }

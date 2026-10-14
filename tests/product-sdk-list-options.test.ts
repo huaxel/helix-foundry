@@ -1,7 +1,7 @@
 import { it, expect, vi, afterEach } from "vitest";
-import { FoundryClient, FoundryError } from "../packages/sdk/src/index.js";
+import { MeridianClient, MeridianError } from "../packages/sdk/src/index.js";
 const client = () =>
-  new FoundryClient({
+  new MeridianClient({
     baseUrl: "https://foundry.invalid",
     workspaceId: "w",
     token: "fixture",

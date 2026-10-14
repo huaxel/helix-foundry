@@ -100,10 +100,7 @@ it("passes explicit approximate profiling through for a local retry", async () =
     undefined,
     "dataset",
     "snapshot",
-    undefined,
-    undefined,
-    localSource,
-    true,
+    { localSource, approximateProfile: true },
   );
 
   expect(execution.execute).toHaveBeenCalledWith(

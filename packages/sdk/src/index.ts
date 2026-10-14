@@ -12,7 +12,7 @@ import type {
   HostingOptions,
   HostedConnection,
   PlanetScaleToken,
-} from "@helix-foundry/shared";
+} from "@meridian/shared";
 export type {
   Bundle,
   Resource,
@@ -28,7 +28,7 @@ export type {
   HostedConnection,
   PlanetScaleToken,
 };
-export class FoundryError extends Error {
+export class MeridianError extends Error {
   constructor(
     public status: number,
     message: string,
@@ -36,7 +36,7 @@ export class FoundryError extends Error {
     super(message);
   }
 }
-export class FoundryClient {
+export class MeridianClient {
   hostingProviders() {
     return this.request("/hosting");
   }
@@ -101,11 +101,11 @@ export class FoundryClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (e) {
-      // Uniform contract: timeouts surface as FoundryError, not DOMException.
+      // Uniform contract: timeouts surface as MeridianError, not DOMException.
       // Other network failures get status 0 (no HTTP status) to avoid
       // mislabeling them as request timeouts.
       const isTimeout = e instanceof Error && e.name === "TimeoutError";
-      throw new FoundryError(
+      throw new MeridianError(
         isTimeout ? 408 : 0,
         isTimeout
           ? `Request timed out after ${this.timeoutMs}ms: ${method || (body === undefined ? "GET" : "POST")} ${path}`
@@ -115,7 +115,7 @@ export class FoundryClient {
       );
     }
     const data = (await r.json()) as any;
-    if (!r.ok) throw new FoundryError(r.status, data.error);
+    if (!r.ok) throw new MeridianError(r.status, data.error);
     return data;
   }
   onboarding() {
@@ -167,7 +167,7 @@ export class FoundryClient {
       body,
     });
     const result = await response.json();
-    if (!response.ok) throw new FoundryError(response.status, result.error);
+    if (!response.ok) throw new MeridianError(response.status, result.error);
     return result as Resource;
   }
   recommendOutcomes() {
@@ -374,7 +374,7 @@ export class FoundryClient {
       signal,
     });
     if (!r.ok || !r.body)
-      throw new FoundryError(r.status, "Event stream unavailable");
+      throw new MeridianError(r.status, "Event stream unavailable");
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
     let pending = "";
     try {

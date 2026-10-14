@@ -200,6 +200,9 @@ export function registerOnboarding(
               secret: seal({ ...resolved.config, ...s }),
               hostedProvider: resolved.provider,
               discovery,
+              ...(body.partitionColumn
+                ? { partitionColumn: body.partitionColumn }
+                : {}),
               ...sourceSyncDefaults(body.kind, body.schedule),
             },
           ),
@@ -254,6 +257,9 @@ export function registerOnboarding(
         secret: seal(resolved.config),
         hostedProvider: resolved.provider,
         discovery,
+        ...(body.partitionColumn
+          ? { partitionColumn: body.partitionColumn }
+          : {}),
         ...sourceSyncDefaults(body.kind, body.schedule),
       });
       return tx.put(
@@ -268,6 +274,17 @@ export function registerOnboarding(
   });
   app.post(base + "/uploads", async (req: any) => {
     const a = await access(req, "editor");
+    // Optional low-cardinality column to partition the imported file by, so
+    // later queries can prune to the partitions they touch.
+    const rawPartitionColumn = (
+      req.query as Record<string, unknown>
+    )?.partitionColumn;
+    const partitionColumn =
+      typeof rawPartitionColumn === "string" &&
+      rawPartitionColumn.length >= 1 &&
+      rawPartitionColumn.length <= 100
+        ? rawPartitionColumn
+        : undefined;
     const operationId = z
       .string()
       .min(8)
@@ -332,6 +349,7 @@ export function registerOnboarding(
                 fingerprint,
                 datasetId: "dataset_" + jobId,
                 actor: a.user.id,
+                ...(partitionColumn ? { partitionColumn } : {}),
                 progress: { message: "File received. Waiting to import" },
               },
               jobId,

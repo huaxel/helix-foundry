@@ -1,6 +1,6 @@
-# Helix Foundry guide
+# Meridian guide
 
-This guide is the detailed companion to the [README](../README.md). It covers what Helix Foundry does, how to connect each kind of source, how AI and review work, how the services fit together, and how to develop and test the code. To install it, start with the README or the [agent runbook](../AGENTS.md). To run an installation day to day, see [operations](OPERATIONS.md).
+This guide is the detailed companion to the [README](../README.md). It covers what Meridian does, how to connect each kind of source, how AI and review work, how the services fit together, and how to develop and test the code. To install it, start with the README or the [agent runbook](../AGENTS.md). To run an installation day to day, see [operations](OPERATIONS.md).
 
 ## Contents
 
@@ -24,7 +24,7 @@ This guide is the detailed companion to the [README](../README.md). It covers wh
 
 ## Features
 
-Helix Foundry is an AI-assisted data workspace that runs on your own computer, built on HelixDB and DuckDB. You connect data, confirm a suggested ontology or describe an outcome, inspect tested proposals, and publish a shared ontology with key metrics on Home. Local inference is the default; Claude and OpenAI are explicit alternatives.
+Meridian is an AI-assisted data workspace that runs on your own computer, built on HelixDB and DuckDB. You connect data, confirm a suggested ontology or describe an outcome, inspect tested proposals, and publish a shared ontology with key metrics on Home. Local inference is the default; Claude and OpenAI are explicit alternatives.
 
 - **Sources:** PostgreSQL and MySQL discovery and streamed snapshot ingestion, sign-in for Neon, Supabase and PlanetScale, Stripe, WorkOS and PostHog, REST pagination, S3-compatible file imports, CSV, JSON, JSONL and Parquet uploads, and a batch ingestion API.
 - **Data:** immutable snapshots for imported data; mounted local Parquet files are read directly with size/mtime guards, alongside profiles, schema-drift review and version history.
@@ -40,7 +40,7 @@ Helix Foundry is an AI-assisted data workspace that runs on your own computer, b
 
 The sidebar has **Home**, **Ontology**, **Data** and **Analyst**, with **Settings** at the bottom. Switch workspaces from the menu at the top of the sidebar.
 
-- **Home** shows the workspace's key metrics: growth and analytics metrics picked by AI from your datasets' schemas, or by code until AI is set up. They are recomputed only when an input dataset gets a new version. Ask anything about your data from the box at the top. Home also shows connections, data health, items that need attention, where you left off, and an overview of the ontology. Old dashboard links open Home.
+- **Home** shows the workspace's key metrics: growth and analytics metrics picked by AI from your datasets' schemas, or by code until AI is set up. They are recomputed only when an input dataset gets a new version — the recompute runs in the background, so Home shows the previous values (with an "updating" note) until the new ones land. Ask anything about your data from the box at the top. Home also shows connections, data health, items that need attention, where you left off, and an overview of the ontology. Old dashboard links open Home.
 - **Ontology** opens on the **Explorer**, which shows your records and how they connect, as a graph or a table. **Object types** lists the published business types. Open a record to see its related records and source history. Edits to a record need a before and after preview and explicit application. Workspace edits do not change imported snapshots, Home's metrics or source systems. Old `/records` links open the Explorer.
 - **Data** brings every connection option into one **Add data** flow. Open a dataset to see a sample, and expand **Details** for schemas, profiles, versions, lineage, exports and connection settings. The old Advanced page now opens Data.
 - **Analyst** holds your chats with the assistant. The assistant decides whether a request needs an executed answer or a tested proposal. Follow-ups keep the selected resource. Routing uses the same model-call and token budget as the rest of the run, and a saved routing decision is reused on resume when the inputs are unchanged. Read-only API tokens can investigate but cannot create definitions or change records.
@@ -53,7 +53,7 @@ While a workspace's setup is incomplete, opening the app goes straight to setup.
 
 1. **AI.** Choose **Local** (the configured OpenAI-compatible llama.cpp server), **Claude** or **OpenAI**. Claude and OpenAI need an API key, and their default models are `claude-sonnet-4-6` and `gpt-5.4-mini`. Local uses `MODEL_ENDPOINT` and the configured model from `.env`; the connection is tested before it is saved. If setup fails, the later steps show the error with **Retry AI connection** and **Change AI choice**. Setup still works without AI; AI only adds descriptions.
 2. **Data.** Connect your sources and let them import completely, or choose **Continue with sample data**. Nothing is seeded automatically.
-3. **Ontology.** Helix Foundry computes a suggested ontology from the data: entities consolidated across sources by matching keys, and the links between them. The suggestion is deterministic. When AI is ready, a background run rewrites only its summary, descriptions and link names. Rename or exclude entities, then click **Looks right — build my workspace**. The build runs as code without model calls, shows its progress in plain stages, and publishes the workspace. Home then opens with key metrics.
+3. **Ontology.** Meridian computes a suggested ontology from the data: entities consolidated across sources by matching keys, and the links between them. The suggestion is deterministic. When AI is ready, a background run rewrites only its summary, descriptions and link names. Rename or exclude entities, then click **Looks right — build my workspace**. The build runs as code without model calls, shows its progress in plain stages, and publishes the workspace. Home then opens with key metrics.
 
 Progress is saved on the server. If you close the browser, background work continues, and reopening the app returns you to the same step.
 
@@ -151,11 +151,13 @@ Schema v2 promotes `status` (mirroring `data.status`) and `updatedAt` to indexed
 
 The API is organized by area: route modules under `apps/api/src/routes/` own their endpoints, while `apps/api/src/assistant/` (context, provider, validate, proposals, build) and `apps/api/src/discovery/` (names, keys, suggest, columns, confirm, bundle) hold the assistant engine and ontology suggestion behind stable `assistant.js` / `discovery.js` facades.
 
-**Executor isolation.** The executor loads approved input snapshots, disables external access and extension installation, locks its configuration, and wraps generated SQL as a single SELECT. It has no connector or API credentials. One DuckDB job runs at a time with a 768 MB memory setting, a 2 GB temporary-spill limit and a 900-second timeout. In Compose the executor container is limited to 2 GB of memory and 128 processes, drops all Linux capabilities and cannot gain new privileges. Never expose its endpoint.
+**Executor isolation.** The default (`EXECUTOR_MODE=materialize`) loads approved input snapshots into memory, disables external access and extension installation, locks its configuration, and wraps generated SQL as a single SELECT. It has no connector or API credentials. One DuckDB job runs at a time with a 768 MB memory setting, a 2 GB temporary-spill limit and a 900-second timeout. In Compose the executor container is limited to 2 GB of memory and 128 processes, drops all Linux capabilities and cannot gain new privileges. Never expose its endpoint.
+
+**Streaming mode (opt-in).** For large snapshots, `EXECUTOR_MODE=stream` (with the `compose.stream.yaml` overlay) runs each query inside a per-job user+mount namespace that sees only that job's authorized Parquet files, and reads them through views so DuckDB prunes columns and row-groups instead of copying the whole snapshot per query. The namespace is the isolation boundary in that mode. Onboarding also publishes dashboard-only beyond one million rows, and such lazy types are browsed as SQL over their snapshot (constant memory) rather than as staged objects. Enable, tune and the certified/unverified scope are in [operations, scale architecture](OPERATIONS.md#scale-architecture-streaming-executor).
 
 ## Security
 
-Helix Foundry is local-first: one person per computer, with no accounts and no sign-in. Because of that, the API only listens on this computer.
+Meridian is local-first: one person per computer, with no accounts and no sign-in. Because of that, the API only listens on this computer.
 
 - `HOST` must be a loopback address unless `ALLOW_NETWORK_ACCESS=true`. Compose sets that flag because it publishes the port on `127.0.0.1` only.
 - Do not expose the app to a network or put it behind a reverse proxy, tunnel or port forward. HelixDB and the executor must remain private.
