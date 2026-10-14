@@ -254,7 +254,9 @@ export async function lazyRecordPage(
     items = [...merged, ...items].slice(0, opts.limit);
   }
   await rememberRefs(store, scope, items);
-  return { items, total: total + (opts.offset === 0 ? matchedManual.length : 0) };
+  // Manual records all join the first page, but the total counts every match
+  // on every page — otherwise the paginator total shrinks after page one.
+  return { items, total: total + matchedManual.length };
 }
 // One lazy record by key, with its overlay applied (detail and edit paths).
 export async function lazyRecord(
@@ -267,28 +269,27 @@ export async function lazyRecord(
   if (!generation) return undefined;
   const ds = await typeDataset(store, scope, type);
   if (!ds) return undefined;
-  try {
-    const r = await queryDatasets(
-      store,
-      scope,
-      [ds.id],
-      `SELECT * FROM ${q(datasetTable(ds.id))} WHERE CAST(${q(type.data.primaryKey)} AS VARCHAR) = ${lit(String(key))} LIMIT 1`,
-    );
-    const row = r.rows[0] as Record<string, any> | undefined;
-    if (!row) return undefined;
-    const rec = rowToRecord(
-      scope,
-      generation,
-      type,
-      ds,
-      row,
-      await store.get(scope, "overlay_" + logicalIdOf(type.data.typeId, key)),
-    );
-    await rememberRefs(store, scope, [rec]);
-    return rec;
-  } catch {
-    return undefined;
-  }
+  // No catch-all here: a missing row returns undefined (callers 404), but
+  // executor or store failures must propagate as 5xx, not masquerade as
+  // "Record unavailable".
+  const r = await queryDatasets(
+    store,
+    scope,
+    [ds.id],
+    `SELECT * FROM ${q(datasetTable(ds.id))} WHERE CAST(${q(type.data.primaryKey)} AS VARCHAR) = ${lit(String(key))} LIMIT 1`,
+  );
+  const row = r.rows[0] as Record<string, any> | undefined;
+  if (!row) return undefined;
+  const rec = rowToRecord(
+    scope,
+    generation,
+    type,
+    ds,
+    row,
+    await store.get(scope, "overlay_" + logicalIdOf(type.data.typeId, key)),
+  );
+  await rememberRefs(store, scope, [rec]);
+  return rec;
 }
 // The record view behind an id in the active generation: a staged object
 // (with its overlay), or — for lazy types — the snapshot row behind a

@@ -257,8 +257,10 @@ export function registerOnboarding(
         secret: seal(resolved.config),
         hostedProvider: resolved.provider,
         discovery,
-        ...(body.partitionColumn
-          ? { partitionColumn: body.partitionColumn }
+        // Explicit null clears a previously set column (poisoned values
+        // must be removable); omitted keeps the stored value.
+        ...(body.partitionColumn !== undefined
+          ? { partitionColumn: body.partitionColumn ?? undefined }
           : {}),
         ...sourceSyncDefaults(body.kind, body.schedule),
       });

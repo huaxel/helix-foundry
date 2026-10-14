@@ -111,6 +111,20 @@ it("ingestFile stores the partition manifest on the version resource", async () 
   expect(v?.data.sourcePath).toBeUndefined();
 });
 
+it("ingestFile rejects an invalid partition column before reaching the executor", async () => {
+  await expect(
+    ingestFile(store, scope, "Sales", "input.jsonl", undefined, datasetId, "vbad", {
+      partitionColumn: "x".repeat(101),
+    }),
+  ).rejects.toThrow("Invalid partition column");
+  await expect(
+    ingestFile(store, scope, "Sales", "input.jsonl", undefined, datasetId, "vbad2", {
+      partitionColumn: "a\0b",
+    }),
+  ).rejects.toThrow("Invalid partition column");
+  expect(execution.execute).not.toHaveBeenCalled();
+});
+
 it("queryDatasets prunes to the matching partition on a partition-key filter", async () => {
   await seedPartitionedDataset();
   execution.execute.mockResolvedValueOnce({
@@ -165,6 +179,58 @@ it("queryDatasets short-circuits an empty partition match to zero rows", async (
   expect(r.rows).toEqual([]);
   expect(r.profile.rows).toBe(0);
   expect(r.state).toBe("dataset_snapshot");
+});
+
+it("queryDatasets does not short-circuit a multi-input query when one input prunes to zero", async () => {
+  await seedPartitionedDataset();
+  await transaction(store, scope, async (tx) => {
+    tx.put(
+      resource(
+        scope,
+        "dataset",
+        "Plain",
+        {
+          table: datasetTable("ds-plain"),
+          activeVersion: "p1",
+          versions: ["p1"],
+          profile,
+        },
+        "ds-plain",
+      ),
+    );
+    tx.put(
+      resource(
+        scope,
+        "version",
+        "Plain",
+        { datasetId: "ds-plain", profile, file: "p1.parquet" },
+        "p1",
+      ),
+    );
+  });
+  execution.execute.mockResolvedValueOnce({
+    profile,
+    version: "q",
+    rows: [{ n: "3" }],
+  });
+  // The SQL may ignore the pruned table or outer-join it: zeroing the whole
+  // result would be wrong (and read_parquet([]) would throw), so the pruned
+  // input falls back to its full file set with the filter still attached.
+  const r = await queryDatasets(
+    store,
+    scope,
+    [datasetId, "ds-plain"],
+    "SELECT count(*) n FROM plain",
+    { filters: [{ datasetId, column: "region", value: "ZZ" }] },
+  );
+  expect(execution.execute).toHaveBeenCalledTimes(1);
+  const job: any = execution.execute.mock.calls[0][0];
+  expect(job.inputs[0].files).toEqual(["v1/eu.parquet", "v1/us.parquet"]);
+  expect(job.inputs[0].filters).toEqual([
+    { datasetId, column: "region", value: "ZZ" },
+  ]);
+  expect(job.inputs[1].files).toBeUndefined();
+  expect(r.rows).toEqual([{ n: "3" }]);
 });
 
 it("queryDatasets prunes a null filter to the null partition", async () => {

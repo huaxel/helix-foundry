@@ -246,6 +246,19 @@ describe.skipIf(!process.env.TEST_EXECUTOR_SANDBOX || !usernsOk)(
       expect(r.body).not.toContain(os.hostname());
     });
 
+    it("masks /proc inside the sandbox (no pid/environ visibility)", async () => {
+      // The mount namespace shares the host PID namespace, so an unmasked
+      // /proc exposes every /proc/<pid>/* file (environ carries
+      // INTERNAL_KEY) to the external-access-ON engine. /proc/version
+      // reads as one row when visible and zero rows once the empty-dir
+      // mask covers it — verified both ways against a live namespace.
+      const r = await query(
+        "SELECT count(*) AS n FROM read_text('/proc/version')",
+      );
+      expect(r.status).toBe(200);
+      expect(JSON.parse(r.body).rows).toEqual([{ n: "0" }]);
+    });
+
     it("blocks writing outside the sandbox (COPY TO a masked path)", async () => {
       const target = join(dir, "evil-canary.csv");
       const r = await query("COPY (SELECT 1 AS x) TO " + q(target));

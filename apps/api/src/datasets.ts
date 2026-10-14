@@ -60,6 +60,15 @@ export async function ingestFile(
     approximateProfile = false,
     partitionColumn,
   } = opts;
+  // Fail fast with a 400 (not a DuckDB binder error after an executor
+  // round-trip): sync routes surface this immediately, jobs record it.
+  assert(
+    partitionColumn === undefined ||
+      (partitionColumn.length >= 1 &&
+        partitionColumn.length <= 100 &&
+        !partitionColumn.includes("\0")),
+    "Invalid partition column",
+  );
   const version =
     versionId === jobId && jobId
       ? "snapshot_" + jobId
@@ -387,8 +396,7 @@ export async function queryDatasets(
   // Partition pruning: when a filter targets an input's partition column, keep
   // only the partitions whose key matches a filter value. A filter on any other
   // column still reads every partition and is applied as a WHERE by the engine.
-  // read_parquet([]) throws, so a pruned-to-zero set short-circuits to an empty
-  // result instead of reaching the executor.
+  const uniqueIds = [...new Set(ids)];
   const pruned = filtered.map((input: any) => {
     if (!input.partitionColumn || !input.files || !input.partitions)
       return input;
@@ -402,12 +410,22 @@ export async function queryDatasets(
     const kept = (input.partitions as { key: string; file: string }[]).filter(
       (p) => keys.has(norm(p.key)),
     );
+    if (kept.length === 0 && uniqueIds.length > 1) {
+      // Several inputs: the SQL may ignore this table or outer-join it, so a
+      // pruned-to-zero set must not zero the whole result. Keep every
+      // partition and let the engine's WHERE (still attached to the input)
+      // filter it to nothing — correct for joins and unreferenced tables.
+      // read_parquet([]) throws, so an empty list can never reach the engine.
+      return input;
+    }
     return { ...input, files: kept.map((p) => p.file) };
   });
   if (pruned.some((i: any) => i.partitions && (i.files || []).length === 0)) {
-    // The partition-key filter matches no partitions -> zero rows. Build the
+    // Single-input query whose partition-key filter matches no partitions ->
+    // zero rows without an executor round-trip (multi-input queries never
+    // reach here: they fall back to the full file set above). Build the
     // empty result from the first dataset's profile so the columns are right.
-    const ds = await store.get(scope, [...new Set(ids)][0]);
+    const ds = await store.get(scope, uniqueIds[0]);
     const profile = ds?.data.profile;
     return {
       profile: profile

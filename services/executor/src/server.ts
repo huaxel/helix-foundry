@@ -144,8 +144,24 @@ async function prepareSandbox(job: any): Promise<Prepared> {
   // Mask whole directory trees — never individual files (one unmasked file is a
   // leak). Only mask paths that exist and are directories, and NEVER an ancestor
   // of the app's own tree (its code + node_modules must stay reachable).
+  // /proc is masked because the mount namespace shares the host PID namespace:
+  // /proc/<server-pid>/environ still carries INTERNAL_KEY, and stream mode
+  // leaves external access ON, so any readable path is a SQL away. /dev is
+  // deliberately NOT masked (the child needs /dev/null and /dev/urandom).
+  // Accepted residual: sibling job dirs under the shared sandbox root stay
+  // visible — every job serves the same installation (same principal), and a
+  // SQL-only attacker can read but not mount, so this is same-user data only.
   const masked: string[] = [];
-  for (const p of [dataDir, localRoot, "/etc", "/root", "/home", "/sys"]) {
+  for (const p of [
+    dataDir,
+    localRoot,
+    "/etc",
+    "/root",
+    "/home",
+    "/sys",
+    "/proc",
+    "/run",
+  ]) {
     if (p === appRoot || appRoot.startsWith(p + sep)) continue;
     try {
       if ((await stat(p)).isDirectory()) masked.push(p);

@@ -64,6 +64,8 @@ function DatasetDetail({
     queryFn: () =>
       api(`/workspaces/${id}/resources/version/${d.data.activeVersion}`),
   });
+  const partitions: { key: string; file: string }[] | undefined =
+    currentVersion.data?.data?.partitions;
   const lineage = useResources("lineage"),
     source = sources.find((s) => s.id === d.data.sourceId);
   return (
@@ -244,13 +246,22 @@ function DatasetDetail({
             Origin: {source?.name || "File / ingestion API"}
           </p>
         </details>
+        {partitions?.length ? (
+          <p className="muted">
+            Partitioned by <code>{currentVersion.data.data.partitionColumn}</code> ·{" "}
+            {partitions.length} partitions. Single-file Parquet export isn't
+            available for partitioned snapshots.
+          </p>
+        ) : null}
         <div className="buttons">
-          <a
-            className="button"
-            href={`/api/v1/workspaces/${id}/datasets/${d.id}/export`}
-          >
-            Export Parquet
-          </a>
+          {!partitions?.length && (
+            <a
+              className="button"
+              href={`/api/v1/workspaces/${id}/datasets/${d.id}/export`}
+            >
+              Export Parquet
+            </a>
+          )}
           {source && (
             <Link className="button" to={paths.connections()}>
               Connection settings

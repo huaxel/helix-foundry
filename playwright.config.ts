@@ -22,6 +22,11 @@ export default defineConfig({
         EXECUTOR_PORT: String(ports.executor),
         INTERNAL_KEY: "acceptance-executor-key-not-for-production",
         NODE_ENV: "test",
+        // Pin the acceptance executor to the materialize path with the slot
+        // lake: dotenv would otherwise inherit live EXECUTOR_MODE (stream
+        // flips the suite onto user namespaces) and LOCAL_DATA_PATH tuning.
+        EXECUTOR_MODE: "materialize",
+        LOCAL_DATA_PATH: dataDir + "/lake",
       },
     },
     {

@@ -50,13 +50,30 @@ export type Execution = {
   // access ON; the namespace is the isolation boundary.
   sandbox?: { in: string[][]; tmp?: string };
 };
-// Sanitize a partition key into a safe Parquet file name (null -> __null__).
-const partitionFileName = (key: string | null) =>
-  (
-    key === null || key === undefined || key === ""
+// A partition key's Parquet file name. Sanitizing alone is not injective
+// ("a/b" vs "a_b", a literal "__null__" vs NULL, "" vs NULL, keys that
+// differ past 120 chars), and two manifest entries sharing one file silently
+// duplicate one partition's rows and drop the other's. So the name keeps a
+// readable sanitized prefix but is disambiguated by a hash of the EXACT key
+// (tagged so NULL can never equal any string); distinct keys always yield
+// distinct files. Manifests carry explicit `file` paths, so versions written
+// under the old scheme keep resolving — only new ingests use these names.
+const partitionFileName = (key: string | null) => {
+  const raw = key === null || key === undefined ? "" : key;
+  const prefix =
+    key === null || key === undefined
       ? "__null__"
-      : key.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120)
-  ) + ".parquet";
+      : raw === ""
+        ? "__empty__"
+        : raw.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 60) ||
+          "__key__";
+  const tag = key === null || key === undefined ? "null" : "str";
+  const hash = createHash("sha256")
+    .update(tag + ":" + raw)
+    .digest("hex")
+    .slice(0, 12);
+  return `${prefix}-${hash}.parquet`;
+};
 
 // Split the `result` view into one Parquet file per distinct value of
 // `column`, under datasets/<scope>/<version>/. Returns the manifest
@@ -75,7 +92,17 @@ async function writePartitions(
   { key: string; file: string; rows: number; size: number; fingerprint: string }[]
 > {
   const { root, scope, version, column } = opts;
-  if (!safePart(column)) throw new Error("Invalid partition column");
+  // Any non-empty column name works here: it only ever reaches SQL through
+  // quote() and the file name through the collision-resistant encoding, so
+  // there is no reason to restrict its alphabet (real schemas have spaces,
+  // dots, mixed case). Only length and NUL are bounded.
+  if (
+    typeof column !== "string" ||
+    column.length < 1 ||
+    column.length > 100 ||
+    column.includes("\0")
+  )
+    throw new Error("Invalid partition column");
   const q = quote(column);
   const keys = (
     await c.runAndReadAll(`SELECT DISTINCT ${q}::VARCHAR AS k FROM result`)

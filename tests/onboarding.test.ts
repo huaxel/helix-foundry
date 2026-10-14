@@ -327,6 +327,23 @@ it("persists the optional partition column on onboarding sources", async () => {
   expect(put.statusCode, put.body).toBe(200);
   sources = await store.list(scope, "source");
   expect(sources[0].data.partitionColumn).toBe("month");
+
+  // Explicit null clears a previously set column (a poisoned value must be
+  // removable); omitting the field would keep it.
+  const clear = await request(
+    "PUT",
+    `/onboarding/sources/${sourceId}`,
+    {
+      kind: "postgres",
+      name: "Sales",
+      config: { database: "sales", password: "secret-test" },
+      schedule: null,
+      partitionColumn: null,
+    },
+  );
+  expect(clear.statusCode, clear.body).toBe(200);
+  sources = await store.list(scope, "source");
+  expect(sources[0].data.partitionColumn ?? null).toBe(null);
 });
 it("blocks stale approvals when goal, selection or source versions change, including definition retests", async () => {
   await inputs();

@@ -26,10 +26,13 @@ export const SourceSchema = z.object({
     .describe(
       "UTC snapshot fallback schedule. Working PostgreSQL/MySQL CDC takes precedence; defaults to every five minutes when CDC is unavailable, hourly for Stripe and WorkOS, and every six hours for PostHog.",
     ),
+  // Nullable so an update can CLEAR a previously set column (explicit null);
+  // omitted keeps the stored value. Every reader treats null like unset.
   partitionColumn: z
     .string()
     .min(1)
     .max(100)
+    .nullable()
     .optional()
     .describe(
       "Optional column to partition the imported snapshot by. When set, the dataset is stored as one Parquet per distinct value of this column so queries can prune to the partitions they touch. Choose a low-cardinality column (e.g. region, month).",

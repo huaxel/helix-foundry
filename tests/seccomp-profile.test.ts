@@ -49,8 +49,17 @@ describe("seccomp-stream.json — streaming executor profile", () => {
     expect(profile.syscalls.length).toBeGreaterThan(0);
   });
 
-  it("covers the x86_64 + x86 + x32 ABIs", () => {
-    for (const arch of ["SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_X32"])
+  // x86_64 hosts and ARM hosts (Apple Silicon, ARM Linux): an arch missing
+  // from this list doesn't get the unshare/mount restrictions, so every
+  // supported ABI must be listed.
+  it("covers the x86_64 + x86 + x32 + ARM ABIs", () => {
+    for (const arch of [
+      "SCMP_ARCH_X86_64",
+      "SCMP_ARCH_X86",
+      "SCMP_ARCH_X32",
+      "SCMP_ARCH_AARCH64",
+      "SCMP_ARCH_ARM",
+    ])
       expect(profile.architectures).toContain(arch);
   });
 

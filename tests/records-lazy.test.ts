@@ -318,6 +318,29 @@ describe("lazy records (un-staged types)", () => {
     expect(f.total).toBe(ROWS.length + 1);
   });
 
+  it("reports the same total on later pages (manual records included)", async () => {
+    await publish(false);
+    const preview = await request("POST", "/actions/change/preview", {
+      operation: "create",
+      objectType: "Customer",
+      values: { id: "C100", name: "Manual Hundred", region: "EU", amount: 1 },
+    });
+    expect(preview.statusCode, preview.body).toBe(200);
+    const executed = await request("POST", "/actions/change/execute", {
+      action: preview.json().action,
+      hash: preview.json().hash,
+      idempotencyKey: randomUUID(),
+    });
+    expect(executed.statusCode, executed.body).toBe(200);
+    // Manual records join only the first page, but every page reports the
+    // same total — otherwise the paginator shrinks past page one.
+    const first = (await page("type=Customer&limit=10&offset=0")).json();
+    const second = (await page("type=Customer&limit=10&offset=10")).json();
+    expect(first.total).toBe(ROWS.length + 1);
+    expect(second.total).toBe(ROWS.length + 1);
+    expect(second.items).toHaveLength(10);
+  });
+
   it("keeps the staged path for small workspaces", async () => {
     await publish(true);
     const f = (await page("type=Customer&limit=10&offset=0")).json();

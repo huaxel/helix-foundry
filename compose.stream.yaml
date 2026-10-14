@@ -35,4 +35,9 @@ services:
       EXECUTOR_MODE: stream
     security_opt:
       - no-new-privileges:true
-      - seccomp=./seccomp-stream.json
+      # The daemon resolves this path on ITS side, so a compose-relative
+      # path fails with ENOENT. Default to the checkout's absolute path
+      # (runbook: always run compose from the repository root); override
+      # with SECCOMP_PROFILE=<absolute path> when the checkout lives
+      # elsewhere relative to the daemon (e.g. remote Docker contexts).
+      - seccomp=${SECCOMP_PROFILE:-$PWD/seccomp-stream.json}

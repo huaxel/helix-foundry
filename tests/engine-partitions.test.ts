@@ -254,3 +254,103 @@ describe("partitioned ingestion (split a source by a column)", () => {
     expect(q.rows).toEqual([{ region: "EU", n: "2" }]);
   });
 });
+
+describe("partition column names", () => {
+  it("accepts real-world column names with spaces and mixed case", async () => {
+    await writeFile(
+      join(dir, "incoming", "a", "spaced.jsonl"),
+      [{ id: 1, "Sale Amount": 10 }].map((r) => JSON.stringify(r)).join("\n"),
+    );
+    const r = await execute(
+      {
+        mode: "ingest",
+        scope: "a",
+        version: "spaced",
+        file: "spaced.jsonl",
+        partitionColumn: "Sale Amount",
+      },
+      dir,
+    );
+    expect(r.partitions).toHaveLength(1);
+    expect(r.partitions![0].rows).toBe(1);
+  });
+});
+
+describe("partition file-name collisions", () => {
+  it("gives colliding keys distinct files with unmixed rows", async () => {
+    // Every key below sanitized to the same file name under the old scheme
+    // ("a/b" vs "a_b", a literal "__null__" vs NULL, "" vs NULL, keys that
+    // differ past the truncation window). Sharing one file duplicated one
+    // partition's rows and dropped the other's.
+    const long1 = "k".repeat(200) + "1";
+    const long2 = "k".repeat(200) + "2";
+    await writeFile(
+      join(dir, "incoming", "a", "collide.jsonl"),
+      [
+        { id: 1, region: "a/b" },
+        { id: 2, region: "a_b" },
+        { id: 3, region: "__null__" },
+        { id: 4, region: null },
+        { id: 5, region: "" },
+        { id: 6, region: long1 },
+        { id: 7, region: long2 },
+      ]
+        .map((r) => JSON.stringify(r))
+        .join("\n"),
+    );
+    const r = await execute(
+      {
+        mode: "ingest",
+        scope: "a",
+        version: "collide",
+        file: "collide.jsonl",
+        partitionColumn: "region",
+      },
+      dir,
+    );
+    const parts = r.partitions || [];
+    expect(parts).toHaveLength(7);
+    // Distinct keys must never share a file.
+    const files = parts.map((p) => p.file);
+    expect(new Set(files).size).toBe(7);
+    for (const p of parts) {
+      expect(p.file.startsWith("collide/")).toBe(true);
+      await expect(stat(join(dir, "datasets", "a", p.file))).resolves.toBeDefined();
+    }
+    // The union over the manifest holds every row exactly once ...
+    const all = await execute(
+      {
+        mode: "query",
+        scope: "a",
+        version: "collide-all",
+        inputs: [{ table: "sales", version: "collide", files }],
+        sql: "SELECT id FROM sales ORDER BY id",
+      },
+      dir,
+    );
+    expect(all.rows.map((x: any) => Number(x.id))).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    // ... and no partition's rows leak into another key's view.
+    const slash = await execute(
+      {
+        mode: "query",
+        scope: "a",
+        version: "collide-slash",
+        inputs: [{ table: "sales", version: "collide", files }],
+        sql: "SELECT id FROM sales WHERE region = 'a/b'",
+      },
+      dir,
+    );
+    expect(slash.rows.map((x: any) => Number(x.id))).toEqual([1]);
+    const nulls = await execute(
+      {
+        mode: "query",
+        scope: "a",
+        version: "collide-null",
+        inputs: [{ table: "sales", version: "collide", files }],
+        sql: "SELECT id FROM sales WHERE region IS NULL",
+      },
+      dir,
+    );
+    expect(nulls.rows.map((x: any) => Number(x.id))).toEqual([4]);
+  });
+});

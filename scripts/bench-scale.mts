@@ -259,7 +259,9 @@ async function runCase(c: Case, port: number) {
         rows.length === expected.expected.length &&
         expected.expected.every(
           (e: any, i: number) =>
-            rows[i]?.region === e.region && Number(rows[i]?.n) === Number(e.n),
+            rows[i]?.region === e.region &&
+            Number(rows[i]?.n) === Number(e.n) &&
+            near(Number(rows[i]?.total), Number(e.total)),
         )
           ? "yes"
           : "MISMATCH";
