@@ -1,4 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="432" height="80" viewBox="0 0 432 80" role="img" aria-labelledby="hf-title">
-<title id="hf-title">Meridian</title>
-<text x="216" y="55" text-anchor="middle" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="46" font-weight="650" letter-spacing="-1.5" fill="#ecebe4">Meridian</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="432" height="80" viewBox="0 0 432 80" role="img" aria-labelledby="m-title">
+<title id="m-title">Meridian</title>
+<g fill="none" stroke="#ecebe4" stroke-width="3.5">
+  <circle cx="38" cy="40" r="24"/>
+  <ellipse cx="38" cy="40" rx="13" ry="24" stroke-width="3"/>
+  <ellipse cx="38" cy="40" rx="4.5" ry="24" stroke-width="3"/>
+  <path d="M14 40h48" stroke-width="3"/>
+  <path d="M17.5 28h41M17.5 52h41" stroke-width="2.25" opacity="0.55"/>
+</g>
+<text x="78" y="52" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="36" font-weight="650" letter-spacing="-1.2" fill="#ecebe4">Meridian</text>
 </svg>
