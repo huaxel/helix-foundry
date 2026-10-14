@@ -34,7 +34,7 @@ Repeated local Docker builds can leave untagged, unused image layers behind. Che
 
 The default executor query path is **materialize**: for each query it copies the authorized, filtered snapshot into an in-memory DuckDB table, then locks the database down (`allowed_paths`, external access off, configuration locked) before running the user's SQL. Correct and safe, but the copy is O(snapshot) per query, so it degrades past a few hundred MB.
 
-**Stream mode** removes the copy. Each query runs inside a per-job user+mount namespace (`unshare -rm`). The executor bind-mounts only that job's authorized Parquet files into a private directory and masks the data roots and system config (`/data`, the mounted-Parquet root, `/etc`, `/root`, `/home`, `/sys`), then reads the inputs through `CREATE VIEW ... read_parquet(...)`. Because the inputs are views, DuckDB prunes columns and skips row-groups the query never touches — a filtered query over a multi-GB snapshot reads only what it needs, with no per-query full copy. The mount namespace, not DuckDB settings, is the isolation boundary, so external access stays on (the views would otherwise be unreadable).
+**Stream mode** removes the copy. Each query runs inside a per-job user+mount namespace (`unshare -rm`). The executor bind-mounts only that job's authorized Parquet files into a private directory and masks the data roots and system config (`/data`, the mounted-Parquet root, `/etc`, `/root`, `/home`, `/sys`, `/proc`, `/run`), then reads the inputs through `CREATE VIEW ... read_parquet(...)`. (`/proc` matters because the mount namespace shares the host PID namespace; `/dev` stays visible — the child needs `/dev/null` and `/dev/urandom`.) Because the inputs are views, DuckDB prunes columns and skips row-groups the query never touches — a filtered query over a multi-GB snapshot reads only what it needs, with no per-query full copy. The mount namespace, not DuckDB settings, is the isolation boundary, so external access stays on (the views would otherwise be unreadable).
 
 The two modes are selected by `EXECUTOR_MODE` (default `materialize` = existing behavior, untouched):
 
@@ -49,6 +49,8 @@ The two modes are selected by `EXECUTOR_MODE` (default `materialize` = existing 
 # One-off, or persist EXECUTOR_MODE=stream in .env and use the overlay in your start command:
 EXECUTOR_MODE=stream docker compose -f compose.yaml -f compose.stream.yaml up -d
 ```
+
+The profile path is resolved by the Docker daemon, so the overlay defaults to `$PWD/seccomp-stream.json` (run compose from the repository root) and honors `SECCOMP_PROFILE` for other layouts, e.g. remote Docker contexts.
 
 The executor probes for user namespaces at boot and fails streaming jobs loudly with a clear message if the allowance is missing, so the overlay is the difference between "streaming works" and "streaming refuses to run". The bundled profile is validated in a real container (streaming queries + escape probes; see `VALIDATION.md`) and `tests/seccomp-profile.test.ts` pins its safety properties. On an older Docker that cannot load a custom profile, fall back to `seccomp=unconfined` (looser, but valid).
 
