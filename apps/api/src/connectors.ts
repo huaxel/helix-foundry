@@ -32,6 +32,9 @@ export async function resolveLocalParquet(
   );
   const info = await stat(abs);
   assert(info.isFile(), "Local source must be a Parquet file", 400);
+  // Parquet needs its magic bytes and footer, so an empty file can never be
+  // one. Say so plainly instead of failing deep inside DuckDB later.
+  assert(info.size > 0, "Local Parquet source is empty", 400);
   if (expected)
     assert(
       info.size === expected.size && info.mtimeMs === expected.mtimeMs,
@@ -257,6 +260,11 @@ export async function discover(kind: string, c: ConnectorConfig) {
         const key = relative(root, full);
         if (!matchesLocalDataInclude(key, config.localDataInclude)) continue;
         const s = await stat(full);
+        // A 0-byte file cannot be Parquet (it needs magic bytes and a footer),
+        // so importing one always fails. Upstream pipelines do leave empty
+        // placeholders behind, and each one otherwise becomes a source plus a
+        // job that is guaranteed to fail, so skip them at discovery.
+        if (s.size === 0) continue;
         tables.push({ name: key, size: s.size });
         found++;
       }

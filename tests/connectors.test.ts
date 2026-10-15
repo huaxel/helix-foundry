@@ -143,6 +143,9 @@ it("discovers local Parquet files recursively and rejects path traversal", async
     await writeFile(resolve(dir, "people.parquet"), parquetFixture);
     await mkdir(resolve(dir, "sub"), { recursive: true });
     await writeFile(resolve(dir, "sub", "nested.parquet"), parquetFixture);
+    // A 0-byte placeholder: real Parquet needs magic bytes and a footer, so
+    // this can never be imported. It must not become a table at all.
+    await writeFile(resolve(dir, "empty.parquet"), "");
 
     // Escape file outside the root for traversal testing
     const escape = resolve(dirname(dir), "escape.parquet");
@@ -156,6 +159,8 @@ it("discovers local Parquet files recursively and rejects path traversal", async
         { name: "sub" + sep + "nested.parquet", size: expect.any(Number) },
       ]),
     );
+    const names = (found.tables as { name: string }[]).map((t) => t.name);
+    expect(names).not.toContain("empty.parquet");
 
     const imported = await importSource(scope, "local", {
       key: "people.parquet",
@@ -178,6 +183,12 @@ it("discovers local Parquet files recursively and rejects path traversal", async
     await expect(
       importSource(scope, "local", { key: ".." + sep + "escape.parquet" }),
     ).rejects.toThrow("within the local data path");
+
+    // An explicit import of the empty placeholder is refused with a clear
+    // message rather than failing later inside DuckDB.
+    await expect(
+      importSource(scope, "local", { key: "empty.parquet" }),
+    ).rejects.toThrow("empty");
   } finally {
     config.localDataPath = previous;
     await rm(dir, { recursive: true, force: true });

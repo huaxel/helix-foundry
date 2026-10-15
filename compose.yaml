@@ -81,8 +81,12 @@ services:
       # use compose.stream.yaml for the OS-isolated streaming executor.
       EXECUTOR_MODE: ${EXECUTOR_MODE:-materialize}
       EXECUTOR_SANDBOX_ROOT: ${EXECUTOR_SANDBOX_ROOT:-/tmp/executor-sbx}
-    mem_limit: 2g
-    cpus: 1.5
+    # Ceilings, not reservations. Tunable because the right size depends on the
+    # widest tables that get profiled: DuckDB's memory limit is per query, so a
+    # container limit that leaves no headroom above DUCKDB_MEMORY forces the
+    # profiling fallbacks instead of exact statistics. Raise both together.
+    mem_limit: ${EXECUTOR_MEM_LIMIT:-2g}
+    cpus: ${EXECUTOR_CPUS:-1.5}
     pids_limit: 128
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
