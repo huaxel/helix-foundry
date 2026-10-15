@@ -8,6 +8,35 @@ const lit = (v: string) => "'" + v.replaceAll("'", "''") + "'";
 const safePart = (s: string) => /^[a-zA-Z0-9_-]{1,100}$/.test(s);
 const isMemoryLimitError = (error: unknown) =>
   /out of memory|memory limit|could not allocate/i.test(String(error));
+// Profiling must never fail an import, and a very wide table can exhaust
+// DuckDB's memory in ANY of the aggregate probes below — including the
+// approximate retries that are meant to rescue the exact ones. These helpers
+// are the floor: a streaming NULL count (O(1) memory, no hash table) and
+// counts taken from the bounded sample the profile already holds, which need
+// no DuckDB memory at all. A profile built from them is flagged approximate,
+// so no primary key is ever claimed from a partial count.
+const streamingNullCount = async (
+  c: DuckDBConnection,
+  quotedColumn: string,
+): Promise<number | undefined> => {
+  try {
+    const row = (
+      await c.runAndReadAll(
+        `SELECT count(*)-count(${quotedColumn}) AS null_count FROM result`,
+      )
+    ).getRowObjectsJson()[0];
+    return Number(row.null_count);
+  } catch (error) {
+    if (!isMemoryLimitError(error)) throw error;
+    return undefined;
+  }
+};
+const sampledNulls = (rows: Record<string, any>[], column: string) =>
+  rows.filter((r) => r[column] === null || r[column] === undefined).length;
+const sampledDistinct = (rows: Record<string, any>[], column: string) =>
+  new Set(
+    rows.map((r) => r[column]).filter((v) => v !== null && v !== undefined),
+  ).size;
 export type Execution = {
   mode: "ingest" | "query" | "export";
   scope: string;
@@ -138,13 +167,31 @@ async function writePartitions(
     const file = version + "/" + partitionFileName(key);
     const real = resolve(root, "datasets", scope, file);
     // Order-independent (sum), NULL-safe, 128-bit (no overflow) content hash.
-    const fp = (
-      await c.runAndReadAll(
-        `SELECT count(*) n, coalesce(sum(hash(${pack})::HUGEINT), 0)::VARCHAR h FROM result WHERE ${where}`,
-      )
-    ).getRowObjectsJson()[0];
-    const rows = Number(fp.n);
-    const fingerprint = rows + ":" + fp.h;
+    // The content fingerprint packs every column, so a very wide table can
+    // exhaust memory here. Reuse is only a disk optimisation, so an unusable
+    // fingerprint degrades to "no reuse" — it can never equal a previous
+    // version's `<rows>:<hash>` — instead of failing the whole ingest.
+    let rows: number;
+    let fingerprint: string;
+    try {
+      const fp = (
+        await c.runAndReadAll(
+          `SELECT count(*) n, coalesce(sum(hash(${pack})::HUGEINT), 0)::VARCHAR h FROM result WHERE ${where}`,
+        )
+      ).getRowObjectsJson()[0];
+      rows = Number(fp.n);
+      fingerprint = rows + ":" + fp.h;
+    } catch (error) {
+      if (!isMemoryLimitError(error)) throw error;
+      rows = Number(
+        (
+          await c.runAndReadAll(
+            `SELECT count(*) n FROM result WHERE ${where}`,
+          )
+        ).getRowObjectsJson()[0].n,
+      );
+      fingerprint = rows + ":unknown";
+    }
     // Reuse: a previous version's partition with the same key + fingerprint is
     // byte-for-byte reusable, so hard-link it (copy fallback, then fresh write).
     const prev = reuseMap.get(key === null ? "" : key);
@@ -450,13 +497,25 @@ export async function execute(
         }
       }
       if (!exact) {
-        const row = (
-          await c.runAndReadAll(
-            `SELECT count(*)-count(${q}) AS null_count, approx_count_distinct(${q}) AS distincts FROM result`,
-          )
-        ).getRowObjectsJson()[0];
-        null_count = row.null_count;
-        distincts = row.distincts;
+        try {
+          const row = (
+            await c.runAndReadAll(
+              `SELECT count(*)-count(${q}) AS null_count, approx_count_distinct(${q}) AS distincts FROM result`,
+            )
+          ).getRowObjectsJson()[0];
+          null_count = row.null_count;
+          distincts = row.distincts;
+        } catch (error) {
+          // The approximate pass can run out of memory too, so it must not be
+          // the last line of defence: an unguarded second failure used to fail
+          // the whole import. Report what is cheap and honest instead, and let
+          // the approximate flag stop any key claim being made from it.
+          if (!isMemoryLimitError(error)) throw error;
+          approximateDistincts = true;
+          null_count =
+            (await streamingNullCount(c, q)) ?? sampledNulls(sample, name);
+          distincts = sampledDistinct(sample, name);
+        }
       }
       columns.push({
         name,
