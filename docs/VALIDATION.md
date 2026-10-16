@@ -89,7 +89,7 @@ Live repair: the 4,516 un-promoted rows were re-promoted in place (idempotent; e
 
 ## Scale architecture validation (October 2026)
 
-The hard fork added a scale-up path so the same single-server release can serve workspaces whose datasets are tens of GB rather than a ≤1M-row MVP. Three layers, each validated on its own terms; the combined "60 GB Parquet in a production deployment" figure is **not** certified (see below).
+The hard fork added a scale-up path so the same single-server release can serve workspaces whose datasets are tens of GB rather than a ≤1M-row MVP. Three layers, each validated on its own terms; the October 2026 real-lake series (below) certifies streaming queries against 63.5 GB of production Parquet — linear scaling, flat memory, exact counts. What it cannot cover, by construction: a *single* 60 GB query/table, which the heterogeneous lake has no instance of.
 
 - **L2 — streaming, OS-isolated executor** (`EXECUTOR_MODE=stream`). The query path reads its inputs through `CREATE VIEW ... read_parquet(...)` inside a per-job user+mount namespace (`unshare -rm`) that bind-mounts only the job's authorized files and masks the data roots and system config. Validated by `tests/executor-sandbox.test.ts` (opt-in, `TEST_EXECUTOR_SANDBOX=1`): ten canary-based tests driving the **real** server → `unshare` → runner → engine, asserting on leaked data rather than on the throw. They cover an authorized snapshot reading correctly, cross-scope `read_parquet`, host-file `read_text`, `/proc` masking (no pid visibility), `COPY TO` a masked `/data` path (file not created), and absolute / `../` / symlink `sourcePath` escapes (all rejected, no leak). Verified in the real executor container: a legit view query returns correct rows while cross-scope and `/etc` escapes are blocked. Network egress is a deployment property (the execution network is `internal: true`), so it is not unit-tested. Measured on a real 3.91 GB Parquet fixture (30 M rows, high-entropy columns; recipe and script below): the streaming path answers filtered and full aggregates in **~0.7 s with ~190 MB peak process memory and zero temp disk**, versus **21–40 s and 1–8.3 GB peak memory (plus up to 7.4 GB of temp spill) for materialize** — a 30–60× wall-time reduction at the production single-threaded, 768 MB default configuration.
 - **L1 — pre-aggregated, stale-while-revalidating Home metrics.** On an input-version change, `loadMetrics` answers from the last computed values with a `computing` flag and a background job recomputes only the metrics whose dataset changed. The job self-claims its target and commits guarded by the pending marker, so it converges even when a change lands in the gap after its commit. A regression test (pre-fix: 315 loop iterations over 10 s without converging; post-fix: exactly 2) pins the convergence. Composes with L2: with `EXECUTOR_MODE=stream` the background scans stream over Parquet instead of copying it.
@@ -97,7 +97,7 @@ The hard fork added a scale-up path so the same single-server release can serve 
 
 All three layers pass with `pnpm typecheck`, the full default suite (233 tests, opt-in integration suites skipped as before), and `pnpm build`. No live installation data was used; the sandbox and lazy-record suites use in-memory stores and temporary loopback ports.
 
-**Not certified at scale (open):** a 60 GB end-to-end import/query workload, peak-memory behavior at that size, and production deployment under sustained concurrent load. The stream query path is measured at 3.91 GB, including inside the container; linear extrapolations are estimates, not certification. Partitioned ingestion and per-query pruning are implemented and covered by functional tests, but their behavior at 60 GB/high partition cardinality remains unmeasured. See `OPERATIONS.md` for configuration and operational limits.
+**Remaining open at scale:** a single 60 GB end-to-end import and high partition cardinality. Query-side certification is done: the real-lake series below measures the stream path on 63.5 GB of production Parquet (per-file scaling to 79M rows, cross-file union, sustained parallel load, 84 MiB cgroup peak). Partitioned ingestion and per-query pruning are implemented and covered by functional tests, but their behavior at 60 GB/high partition cardinality remains unmeasured. See `OPERATIONS.md` for configuration and operational limits.
 
 ### Streaming vs materialize on a 3.9 GB Parquet fixture (October 2026)
 
@@ -158,3 +158,20 @@ BENCH_EXECUTOR_URL=http://127.0.0.1:3902 BENCH_EXECUTOR_KEY=<key> \
 docker exec meridian-bench-executor cat /sys/fs/cgroup/memory.peak   # in-container peak bytes
 docker rm -f meridian-bench-executor
 ```
+
+### Real-lake certification series (October 2026)
+
+No synthetic regen: the owner's machine cannot take a 25-minute 60 GB generation, so certification ran against the existing lake instead — 741 real Parquet files, 63.5 GB, heterogeneous schemas (7–162 columns, 1 M–127 M rows), which is arguably the harder and more representative target. A disposable executor container (`meridian:local`, the shipping `seccomp-stream.json` profile, `cap_drop ALL`, 4g/1.5 CPUs, DuckDB 2 GB / 4 threads, lake mounted read-only, loopback port) ran the series; the live stack was untouched. Per-file results (count checked exact against host-side ground truth, plus a group-by-first-column top-20 full scan+aggregate):
+
+| File | Rows | Count | Group-by |
+| ---- | ---: | ----: | -------: |
+| stg_div/ZST_SIT_REGISTR | 37.5M | 0.7s | 0.9s (9 groups) |
+| FICA/DFKKOP (162 cols) | 47.9M | 0.5s | 1.1s (1 group) |
+| mobi/zcc_anpr_info | 13.4M | 0.4s | 0.6s |
+| stg_pers/ZST_PERSADDR_X | 73.2M | 0.4s | 1.3s |
+| stg_div/ZST_DIV_MUT (73 cols) | 24.4M | 0.4s | 0.7s |
+| zbp/adrc (101 cols) | 17.8M | 0.5s | 1.8s |
+| stg_pers/ZST_PERSRELATION | 63.0M | 0.5s | 1.4s |
+| mobi/ZTX_VIAPASS_DTS | 79.4M | 0.4s | 0.7s |
+
+Multi-file: the ANPR pair shares 13 of 15 columns, so a `UNION ALL` over the shared schema (18.76M rows / 2.9 GB) is a genuine cross-file streaming query — exact count in 1.7s. Concurrency (`EXECUTOR_CONCURRENCY=2`): 63M- and 79M-row full group-bys in parallel — both 200, 1.9s wall, no queue penalty. Executor cgroup peak across the whole series: **84 MiB**; ~33 GB cumulatively scanned. The widest real file (DFKKOP, 162 columns) aggregates exactly, so the 2 GB DuckDB budget holds with headroom. Honest scope: lake schemas are heterogeneous, so no single 60 GB query exists to run — certification here means linear scaling, flat memory, and exact counts, and all three hold. What remains unmeasured: a single 60 GB import and high partition cardinality (see above).
