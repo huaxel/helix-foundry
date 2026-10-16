@@ -709,9 +709,13 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
       // The AI's working metrics, topped up with code-picked ones run now (so
       // their results are current too): Home never loses metrics.
       const ai = await validateSpecs(store, scope, reply, current),
-        fill = (
-          await validateSpecs(store, scope, computedSpecs(current), current)
-        ).kept,
+        fillPicked = await validateSpecs(
+          store,
+          scope,
+          computedSpecs(current),
+          current,
+        ),
+        fill = fillPicked.kept,
         picked = mergePicks(ai, fill);
       const saved =
         ai.kept.length > 0 && signature === run.data.metricsSignature;
@@ -720,6 +724,9 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
           aiSignature: signature,
           runId: id,
         });
+      // Why nothing ran, when that is the reason: a missing snapshot or an
+      // unreadable dataset otherwise reads as a vague "no usable metrics".
+      const reason = ai.reasons?.[0] ?? fillPicked.reasons?.[0];
       await event(
         store,
         scope,
@@ -733,7 +740,11 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
             : "None of the AI’s metrics ran on your data; keeping the computed ones",
         {
           status: saved ? "succeeded" : "failed",
-          error: saved ? null : "No usable metrics",
+          error: saved
+            ? null
+            : ai.kept.length || fill.length
+              ? "No usable metrics"
+              : `No usable metrics${reason ? `: ${reason}` : ""}`,
         },
       );
       return;
