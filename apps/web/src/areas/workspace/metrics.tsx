@@ -623,7 +623,7 @@ export function KeyMetrics() {
               {data?.error && (
                 <p className="wk-metrics-note" title={data.error}>
                   <CircleAlert size={13} aria-hidden className="is-warning" />
-                  Couldn’t pick new metrics: {data.error}
+                  {data.error}
                 </p>
               )}
             </>

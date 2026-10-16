@@ -370,6 +370,29 @@ describe("code-picked metrics", () => {
     expect(executor.queries).toBe(0);
     expect(await store.list(scope, "run")).toEqual([]);
   });
+
+  it("says why Home is empty when no metric can be computed", async () => {
+    await samples();
+    expect((await home()).metrics.length).toBeGreaterThan(0);
+
+    // The snapshots go missing (the live case: volume replaced after the
+    // metadata was written). Home must report that, not look like a workspace
+    // with nothing to measure.
+    await rm(resolve(config.dataDir, "datasets", scope), {
+      recursive: true,
+      force: true,
+    });
+    // A new schema signature forces the candidates to be re-picked and re-run.
+    await transaction(store, scope, async (tx) => {
+      const stored = (await tx.get("home_metrics"))!;
+      tx.update(stored, { ...stored.data, signature: "changed" });
+    });
+
+    const empty = await home();
+    expect(empty.status).toBe("ready");
+    expect(empty.metrics).toEqual([]);
+    expect(empty.error).toMatch(/Couldn.t compute \d+ home metrics?: /);
+  });
 });
 
 describe("compileMetric", () => {

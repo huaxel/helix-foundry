@@ -51,6 +51,10 @@ type Stored = {
   aiSignature?: string;
   runId?: string;
   version?: number;
+  // Why a candidate was dropped, so an empty Home can say what happened
+  // instead of looking like a workspace with nothing to measure.
+  dropped?: number;
+  reasons?: string[];
 };
 
 const temporal = (t: string) => !nested(t) && /^(DATE|TIMESTAMP)/i.test(t);
@@ -495,7 +499,8 @@ export async function validateSpecs(
 ) {
   const byId = new Map(datasets.map((d) => [d.id, d]));
   const seen = new Set<string>(),
-    kept: { metric: Compiled; result: HomeMetric["result"] }[] = [];
+    kept: { metric: Compiled; result: HomeMetric["result"] }[] = [],
+    reasons = new Set<string>();
   let dropped = 0;
   const tried = await Promise.all(
     specs.map(async (spec, i) => {
@@ -516,6 +521,8 @@ export async function validateSpecs(
         };
         const result = await run(store, scope, metric);
         if (usable(metric, result)) return { metric, result };
+        // Keep why it failed: an all-dropped workspace reports this on Home.
+        if (result.error) reasons.add(result.error.slice(0, 200));
         if (result.error || fixed.kind !== "trend") return undefined;
       }
       return undefined;
@@ -529,7 +536,7 @@ export async function validateSpecs(
     seen.add(t.metric.sql);
     kept.push(t);
   }
-  return { kept, dropped };
+  return { kept, dropped, reasons: [...reasons].slice(0, 3) };
 }
 
 // Stand-in metrics chosen by code from the schema: growth of the largest
@@ -681,7 +688,11 @@ export async function saveMetrics(
   scope: string,
   signature: string,
   source: Stored["source"],
-  picked: Awaited<ReturnType<typeof validateSpecs>>,
+  picked: {
+    kept: Awaited<ReturnType<typeof validateSpecs>>["kept"];
+    dropped?: number;
+    reasons?: string[];
+  },
   datasets: Resource[],
   extra: Partial<Stored> = {},
 ) {
@@ -696,6 +707,8 @@ export async function saveMetrics(
       source,
       generatedAt: new Date().toISOString(),
       metrics,
+      dropped: picked.dropped,
+      reasons: picked.reasons,
       results: {
         versions: versionsOf(metrics, datasets),
         computedAt: new Date().toISOString(),
@@ -939,10 +952,17 @@ async function loadMetrics(
     aiReady: ready,
     generating: status === "queued" || status === "running",
     ...(s.results.pending != null ? { computing: true } : {}),
+    // An AI run that failed, or a workspace whose every candidate metric could
+    // not be computed (a missing snapshot, usually). The second case otherwise
+    // looked identical to a workspace with nothing to measure.
     error:
       status === "failed"
         ? runRes!.data.error || "The AI couldn’t pick metrics."
-        : undefined,
+        : !s.metrics.length && (s.dropped || 0) > 0
+          ? `Couldn’t compute ${s.dropped} home metric${s.dropped === 1 ? "" : "s"}${
+              s.reasons?.length ? `: ${s.reasons[0]}` : "."
+            }`
+          : undefined,
     generatedAt: s.generatedAt,
     computedAt: s.results.computedAt,
     metrics: s.metrics.map((m) => ({
