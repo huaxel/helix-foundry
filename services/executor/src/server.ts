@@ -16,12 +16,14 @@ const appRoot = resolve(dirname(runnerPath), "..", "..", "..");
 // Single-quote a path for the sandbox setup shell script.
 const shq = (p: string) => `'${p.replace(/'/g, `'\\''`)}'`;
 
-let active = 0;
+import { createGate } from "./gate.js";
+
 const concurrency = Math.max(
   1,
   Math.min(4, Math.floor(Number(process.env.EXECUTOR_CONCURRENCY) || 1)),
 );
-const waiters: (() => void)[] = [];
+// Interactive queries jump ahead of queued background (ingest/export) jobs.
+const gate = createGate(concurrency);
 
 // Stream mode wraps each job in a per-job user+mount namespace (unshare -rm).
 // That needs the kernel to allow unprivileged user namespaces AND the
@@ -188,12 +190,8 @@ app.post("/execute", async (req, reply) => {
     !timingSafeEqual(Buffer.from(key), Buffer.from(expected))
   )
     return reply.code(401).send({ error: "Unauthorized" });
-  while (active >= concurrency) {
-    if (waiters.length >= 50)
-      return reply.code(429).send({ error: "Executor queue is full" });
-    await new Promise<void>((resolve) => waiters.push(resolve));
-  }
-  active++;
+  if ((await gate.enter((req.body as { mode?: string } | undefined)?.mode === "query")) !== "ok")
+    return reply.code(429).send({ error: "Executor queue is full" });
   try {
     let prepared: Prepared = { enabled: false };
     try {
@@ -276,8 +274,7 @@ app.post("/execute", async (req, reply) => {
       child.stdin.end(JSON.stringify(job));
     });
   } finally {
-    active--;
-    waiters.shift()?.();
+    gate.leave();
   }
 });
 await app.listen({
