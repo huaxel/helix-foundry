@@ -60,7 +60,7 @@ The executor probes for user namespaces at boot and fails streaming jobs loudly 
 
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
-| `EXECUTOR_CONCURRENCY` | `1` | DuckDB jobs the executor runs at once |
+| `EXECUTOR_CONCURRENCY` | `1` | DuckDB jobs the executor runs at once. Raising it to 2 keeps a slot reserved for interactive queries: background (ingest/export) jobs are capped at `concurrency - 1`, so a dashboard query is admitted while a bulk profile is running instead of waiting it out. Size `EXECUTOR_MEM_LIMIT` for the worst case — one profiling job and one query, each up to `DUCKDB_MEMORY`. |
 | `DUCKDB_MEMORY` | `768MB` | Per-query DuckDB memory before it spills |
 | `DUCKDB_THREADS` | `1` | DuckDB threads per query |
 | `DUCKDB_TEMP_LIMIT` | `2GB` | Spill-to-disk cap per query |
@@ -79,6 +79,6 @@ The executor container is capped at 2 GB memory, 1.5 CPUs and 128 pids, on an in
 
 ## Deployment limits
 
-Compose uses a small-machine resource budget: app 1 GB, worker 768 MB, and executor 2 GB memory caps. HelixDB remains uncapped because it is not being restarted as part of this update. The executor defaults to one DuckDB job, 768 MB DuckDB memory, one DuckDB thread, a 2 GB temporary-spill limit, and a 900-second (15-minute) timeout. These are ceilings, not reservations; raise them only after measuring representative workloads. Override the executor settings with `EXECUTOR_CONCURRENCY`, `DUCKDB_MEMORY`, `DUCKDB_THREADS`, `DUCKDB_TEMP_LIMIT`, `DUCKDB_TEMP_DIR`, `EXECUTOR_MEM_LIMIT` and `EXECUTOR_CPUS` in `.env` (the container ceilings need the executor recreated to take effect). The executor network remains internal-only. One worker performs one inference job at a time; use one worker replica in this single-server release.
+Compose uses a small-machine resource budget: app 1 GB, worker 768 MB, and executor 2 GB memory caps. HelixDB remains uncapped because it is not being restarted as part of this update. The executor defaults to one DuckDB job, 768 MB DuckDB memory, one DuckDB thread, a 2 GB temporary-spill limit, and a 900-second (15-minute) timeout. These are ceilings, not reservations; raise them only after measuring representative workloads. With `EXECUTOR_CONCURRENCY` above 1, remember the memory worst case is `EXECUTOR_CONCURRENCY` x `DUCKDB_MEMORY` (per-process limits do not share): at 2 x 2 GB, set `EXECUTOR_MEM_LIMIT` to at least 5g so a profiling job and a query cannot together cross the container limit and get OOM-killed. Override the executor settings with `EXECUTOR_CONCURRENCY`, `DUCKDB_MEMORY`, `DUCKDB_THREADS`, `DUCKDB_TEMP_LIMIT`, `DUCKDB_TEMP_DIR`, `EXECUTOR_MEM_LIMIT` and `EXECUTOR_CPUS` in `.env` (the container ceilings need the executor recreated to take effect). The executor network remains internal-only. One worker performs one inference job at a time; use one worker replica in this single-server release.
 
 The supported runtime is Node.js 24. There are no accounts: each installation serves one person on their own computer, who owns every workspace. API tokens are workspace scoped, optionally read-only, and revocable. See `VALIDATION.md` for benchmark scope and unverified deployment combinations.

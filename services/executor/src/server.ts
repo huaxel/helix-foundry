@@ -197,7 +197,8 @@ app.post("/execute", async (req, reply) => {
     !timingSafeEqual(Buffer.from(key), Buffer.from(expected))
   )
     return reply.code(401).send({ error: "Unauthorized" });
-  if ((await gate.enter((req.body as { mode?: string } | undefined)?.mode === "query")) !== "ok")
+  const query = (req.body as { mode?: string } | undefined)?.mode === "query";
+  if ((await gate.enter(query)) !== "ok")
     return reply.code(429).send({ error: "Executor queue is full" });
   try {
     let prepared: Prepared = { enabled: false };
@@ -281,7 +282,7 @@ app.post("/execute", async (req, reply) => {
       child.stdin.end(JSON.stringify(job));
     });
   } finally {
-    gate.leave();
+    gate.leave(query);
   }
 });
 await app.listen({
