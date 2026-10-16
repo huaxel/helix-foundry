@@ -4,19 +4,26 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { timingSafeEqual } from "node:crypto";
 import { mkdir, mkdtemp, rm, stat, writeFile, realpath } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, isAbsolute, sep, dirname } from "node:path";
 
 const app = Fastify({ bodyLimit: 1024 * 1024, logger: true });
 const runnerPath = fileURLToPath(new URL("./runner.js", import.meta.url));
 // The app root (contains node_modules/tsx). Pin the query child's cwd here so
-// `node --import tsx` resolves regardless of the server's own working dir.
+// the loader — tsx when the runner is TypeScript source, nothing when it is
+// compiled — resolves regardless of the server's own working dir.
 const appRoot = resolve(dirname(runnerPath), "..", "..", "..");
 
 // Single-quote a path for the sandbox setup shell script.
-const shq = (p: string) => `'${p.replace(/'/g, `'\\''`)}'`;
+const shq = shellQuote;
+
+// The packaged image ships compiled JavaScript, so the child needs no TypeScript
+// loader; from the source tree it does (see runner-launch.ts).
+const launch = runnerLaunch(runnerPath, existsSync(runnerPath));
 
 import { createGate } from "./gate.js";
+import { runnerLaunch, shellQuote } from "./runner-launch.js";
 
 const concurrency = Math.max(
   1,
@@ -175,7 +182,7 @@ async function prepareSandbox(job: any): Promise<Prepared> {
     "set -e",
     ...binds,
     ...masked.map((p) => `mount --bind ${shq(mask)} ${shq(p)}`),
-    `exec node --import tsx ${shq(runnerPath)}`,
+    launch.shell,
   ].join("\n");
   return { enabled: true, sandbox: { in: inPaths, tmp }, setup, dir };
 }
@@ -231,7 +238,7 @@ app.post("/execute", async (req, reply) => {
             env,
             stdio: ["pipe", "pipe", "pipe"],
           })
-        : spawn(process.execPath, ["--import", "tsx", runnerPath], {
+        : spawn(process.execPath, launch.args, {
             cwd: appRoot,
             env,
             stdio: ["pipe", "pipe", "pipe"],
