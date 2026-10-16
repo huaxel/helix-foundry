@@ -37,33 +37,59 @@ export async function runSyncJob(store: Store, scope: string, job: Resource) {
     unseal(source.data.secret),
     (p) => jobProgress(store, scope, job.id, p),
   );
-  const ds = await (async () => {
-    try {
-      return await ingestFile(
-        store,
-        scope,
-        source.name,
-        imported.file || "",
-        source.id,
-        source.data.datasetId || "source_" + source.id,
-        job.id,
-        {
-          schema: imported.schema,
-          jobId: job.id,
-          partitionColumn: source.data.partitionColumn,
-          localSource:
-            imported.sourcePath && imported.sourceFingerprint
-              ? {
-                  path: imported.sourcePath,
-                  fingerprint: imported.sourceFingerprint,
-                }
-              : undefined,
-        },
-      );
-    } finally {
-      if (imported.file) await removeStagedInput(scope, imported.file);
+  const fresh =
+    imported.sourcePath && imported.sourceFingerprint
+      ? {
+          path: imported.sourcePath,
+          fingerprint: imported.sourceFingerprint,
+        }
+      : undefined;
+  // Skip re-profiling when the mounted file is provably unchanged: the
+  // active version carries the same size+mtime fingerprint. First syncs,
+  // changed files and partitioned sources always profile. This trusts
+  // exactly what resolveSource already trusts — no new assumption.
+  let ds;
+  if (fresh && !source.data.partitionColumn && source.data.datasetId) {
+    const existing = await store.get(scope, source.data.datasetId);
+    const ver = existing?.data.activeVersion
+      ? await store.get(scope, existing.data.activeVersion)
+      : undefined;
+    const prev = ver?.data.sourceFingerprint;
+    if (
+      ver &&
+      prev &&
+      prev.size === fresh.fingerprint.size &&
+      prev.mtimeMs === fresh.fingerprint.mtimeMs
+    ) {
+      ds = existing;
+      await jobProgress(store, scope, job.id, {
+        message: "Source unchanged; keeping existing profile",
+      });
     }
-  })();
+  }
+  if (!ds) {
+    ds = await (async () => {
+      try {
+        return await ingestFile(
+          store,
+          scope,
+          source.name,
+          imported.file || "",
+          source.id,
+          source.data.datasetId || "source_" + source.id,
+          job.id,
+          {
+            schema: imported.schema,
+            jobId: job.id,
+            partitionColumn: source.data.partitionColumn,
+            localSource: fresh,
+          },
+        );
+      } finally {
+        if (imported.file) await removeStagedInput(scope, imported.file);
+      }
+    })();
+  }
   await transaction(store, scope, async (tx) => {
     const s = await tx.get(source.id);
     if (s && s.data.secret === source.data.secret)
