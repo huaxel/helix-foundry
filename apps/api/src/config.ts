@@ -22,6 +22,8 @@ export const config = {
   localDataInclude: process.env.LOCAL_DATA_INCLUDE || "**/*.parquet",
   // Requests per minute per IP; local acceptance runs raise it.
   rateLimit: Number(process.env.RATE_LIMIT_MAX) || 240,
+  // Bytes in one transaction's HelixDB write, below HelixDB's request limit.
+  helixWriteLimit: Number(process.env.HELIX_WRITE_LIMIT) || 1_500_000,
   // Password for browser/API access over a network (e.g. Tailscale). When
   // set, every API route requires a password session or a workspace token;
   // when unset, loopback requests act as the local owner (no sign-in).

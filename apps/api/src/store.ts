@@ -61,12 +61,37 @@ export interface Store {
 }
 const anchor = (key: string) =>
   g().nWithLabelWhere("FoundryRecord", SourcePredicate.eq("key", key));
+// HelixDB refuses a request body over its limit with only "length limit
+// exceeded", so a transaction's write is measured before it is sent. Imports
+// are the usual cause: each selected table is one source in one transaction.
+export const writeTooLarge = (bytes?: number) =>
+  new AppError(
+    413,
+    bytes === undefined
+      ? "This change is too large to save at once. Select fewer tables at once, then try again."
+      : `This change is too large to save at once (${(bytes / 1e6).toFixed(1)} MB). Select fewer tables at once, then try again.`,
+  );
 export class HelixStore implements Store {
   client = Client.server(config.helix);
   async read(q: any): Promise<any> {
     return this.client.query(q.toQueryRequest()).send();
   }
-  async write(q: any): Promise<any> {
+  async write(q: any, limit?: number): Promise<any> {
+    // A body over `limit` bytes is refused before it is sent.
+    if (limit) {
+      const bytes = Buffer.byteLength(q.toQueryRequest().toJsonString());
+      if (bytes > limit) {
+        console.error(
+          JSON.stringify({
+            level: "warn",
+            msg: "HelixDB write too large",
+            bytes,
+            limit,
+          }),
+        );
+        throw writeTooLarge(bytes);
+      }
+    }
     return this.client
       .requestBuilder()
       .shouldAwaitDurability(true)
@@ -422,9 +447,12 @@ export class HelixStore implements Store {
     }
     q = q.returning(["guard"]);
     try {
-      const r = await this.write(q);
+      const r = await this.write(q, config.helixWriteLimit);
       return !!r.guard?.length;
     } catch (e) {
+      // HelixDB's own limit may sit below ours; its refusal says the same.
+      if (/length limit exceeded/i.test(String((e as { message?: string })?.message || e)))
+        throw writeTooLarge();
       // Retry transient server failures: optimistic-concurrency conflicts
       // and the pinned HelixDB v0.0.6's flaky cascades planner, which
       // intermittently rejects otherwise-valid write batches (nothing is
