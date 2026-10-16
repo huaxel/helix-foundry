@@ -2,7 +2,10 @@ import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, stat, realpath, link, copyFile } from "node:fs/promises";
 import { resolve, dirname, isAbsolute, sep } from "node:path";
-import type { DatasetProfile } from "../../../packages/shared/src/index.js";
+import {
+  compactSample,
+  type DatasetProfile,
+} from "../../../packages/shared/src/index.js";
 export const quote = (v: string) => '"' + v.replaceAll('"', '""') + '"';
 const lit = (v: string) => "'" + v.replaceAll("'", "''") + "'";
 const safePart = (s: string) => /^[a-zA-Z0-9_-]{1,100}$/.test(s);
@@ -472,6 +475,10 @@ export async function execute(
         `SELECT * FROM result LIMIT ${Math.min(job.limit || 50, 1000)} OFFSET ${Math.max(job.offset || 0, 0)}`,
       )
     ).getRowObjectsJson();
+    // Stored samples stay compact: long values are truncated to
+    // SAMPLE_VALUE_LIMIT so wide tables don't bloat every dataset listing.
+    // The full sample still flows to `rows` for staging below.
+    const stored = compactSample(sample);
     // Profile one column at a time: exact counts with a per-column fallback
     // to approximate under memory pressure, so a single wide column never
     // strips key evidence from the other columns.
@@ -522,7 +529,7 @@ export async function execute(
         type: String(col.column_type),
         nulls: Number(null_count),
         distinct: Number(distincts),
-        examples: sample.slice(0, 3).map((r) => r[name]),
+        examples: stored.slice(0, 3).map((r) => r[name]),
         sensitive:
           /email|phone|ssn|password|secret|token|address|birth|credit/i.test(
             name,
@@ -572,7 +579,7 @@ export async function execute(
       rows,
       ...(duplicateRows === undefined ? {} : { duplicateRows }),
       columns,
-      sample,
+      sample: stored,
       fingerprint: createHash("sha256")
         .update(JSON.stringify([schema, rows, rowFingerprint]))
         .digest("hex"),

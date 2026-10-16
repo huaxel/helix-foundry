@@ -13,6 +13,7 @@ import { runSyncJob, runUploadJob, syncLocalSources } from "./data-jobs.js";
 import { runSuggestJob } from "./suggest-job.js";
 import { runValidateJob } from "./validate-job.js";
 import { runPipelineJob } from "./pipeline-jobs.js";
+import { compactStoredSamples } from "./dataset-samples.js";
 // Queue, leases and retries live here; each job type's work lives with its area.
 const jobHandlers: Record<
   string,
@@ -70,6 +71,15 @@ export function startWorker(store: Store) {
               });
             });
           }
+        // One-time migration: profiles stored by earlier releases keep whole
+        // sample values; compact them so wide tables don't bloat listings.
+        // Guarded by the migration flag, so this is one cheap read per tick.
+        await compactStoredSamples(store, scope).catch((e) =>
+          console.error(
+            "Worker: compacting stored samples:",
+            e instanceof Error ? e.message : e,
+          ),
+        );
         // Storage-level status filter: fetch only queued/running runs+jobs,
         // not the full unbounded history. Pre-upgrade nodes carry the
         // promoted status via the schema-v2 backfill in store.init().
