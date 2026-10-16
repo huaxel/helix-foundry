@@ -23,6 +23,7 @@ const shq = shellQuote;
 const launch = runnerLaunch(runnerPath, existsSync(runnerPath));
 
 import { createGate } from "./gate.js";
+import { sweepScratch, SCRATCH_PREFIX } from "./scratch.js";
 import { runnerLaunch, shellQuote } from "./runner-launch.js";
 
 const concurrency = Math.max(
@@ -285,6 +286,16 @@ app.post("/execute", async (req, reply) => {
     gate.leave(query);
   }
 });
+// Nothing is running yet, so scratch left by killed jobs can go; entries newer
+// than one job timeout are kept, in case another executor shares this volume.
+const swept = await sweepScratch(
+  resolve(process.env.DATA_DIR || ".data", "scratch"),
+  Number(process.env.EXECUTOR_TIMEOUT_MS || 120000),
+);
+if (swept.length)
+  app.log.info(
+    `Removed ${swept.length} stale ${SCRATCH_PREFIX}* director${swept.length === 1 ? "y" : "ies"} left by killed jobs`,
+  );
 await app.listen({
   port: Number(process.env.EXECUTOR_PORT || 3002),
   host: process.env.EXECUTOR_HOST || "127.0.0.1",
