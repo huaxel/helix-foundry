@@ -413,9 +413,24 @@ it("builds from dashboards alone when no table has a usable key", async () => {
   });
   expect(confirmed.statusCode, confirmed.body).toBe(200);
   expect(confirmed.json().buildRun.data.ontology.entities).toEqual([]);
+  // Make the generated dashboard query fail once, then recover so the pruning
+  // pass can validate and publish the fallback overview.
+  let failedQuery = false;
+  gate.onQuery = async () => {
+    if (!failedQuery) {
+      failedQuery = true;
+      throw new Error("Synthetic snapshot read failure");
+    }
+  };
   await buildWorkspace(store, scope, confirmed.json().buildRun.id);
   const built = await onboardingState(store, scope);
   expect(built.complete, built.buildRun?.data.error).toBe(true);
+  expect(failedQuery).toBe(true);
+  expect(built.proposal!.data.bundle.assumptions).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining("Records (Synthetic snapshot read failure)"),
+    ]),
+  );
   // Without records the overview counts every table's rows.
   const dashboard = await store.get(scope, built.dashboardId!);
   expect(dashboard?.data.widgets.map((w: any) => w.title)).toEqual(["Records"]);

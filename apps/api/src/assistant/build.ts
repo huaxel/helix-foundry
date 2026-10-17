@@ -48,6 +48,7 @@ import {
   providerSettings,
 } from "./provider.js";
 import { validateBundle } from "./validate.js";
+import { assumptionsWithDroppedWidgets } from "./widget-warnings.js";
 import { event, publishProposal } from "./proposals.js";
 
 export async function enqueue(
@@ -1329,6 +1330,10 @@ export async function buildWorkspace(store: Store, scope: string, id: string) {
         const actions = failed("Action: ");
         const pruned = BundleSchema.parse({
           ...bundle,
+          assumptions: assumptionsWithDroppedWidgets(
+            bundle.assumptions,
+            report,
+          ),
           dashboards: bundle.dashboards.map((d) => {
             const widgets = d.widgets.filter(
               (_, i) => `chart:${d.name}:${i}` in report.previews,
